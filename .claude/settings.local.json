@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python run_gui.py)",
+      "Bash(.venv/bin/python run_gui.py)",
+      "Bash(kill %1)",
+      "Bash(mkdir -p /Applications/ForeFold/exe/src/forefold_attendance_gui/dashboard/employees)",
+      "Bash(mkdir -p /Applications/ForeFold/exe/src/forefold_attendance_gui/dashboard/reports)",
+      "Bash(.venv/bin/python -c ':*)"
+    ]
+  }
+}

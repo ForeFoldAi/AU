@@ -1,0 +1,46 @@
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# Nuitka (intermediate dirs if output is not only under build/)
+*.build/
+*.dist/
+*.onefile-build/
+run_gui.build/
+run_gui.dist/
+run_gui.onefile-build/
+
+# Testing / typing / coverage
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+coverage.xml
+
+# IDE / editor
+.idea/
+*.swp
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local secrets / env (do not commit credentials)
+.env
+.env.local
+*.pem
