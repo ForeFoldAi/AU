@@ -29,7 +29,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          pip install "nuitka>=2.4"
+          pip install "nuitka[onefile]>=2.4"
 
       - name: Build with Nuitka
         run: |
@@ -39,6 +39,7 @@ jobs:
           if (Test-Path run_gui.onefile-build) { Remove-Item -Recurse -Force run_gui.onefile-build }
           python -m nuitka `
             --onefile `
+            --assume-yes-for-downloads `
             --windows-console-mode=disable `
             --enable-plugin=pyside6 `
             --include-qt-plugins=platforms `

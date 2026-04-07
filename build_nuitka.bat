@@ -21,7 +21,7 @@ if errorlevel 1 (
 echo [1/4] Installing dependencies...
 python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
-python -m pip install "nuitka>=2.4"
+python -m pip install "nuitka[onefile]>=2.4"
 if errorlevel 1 (
   echo ERROR: Failed installing dependencies.
   exit /b 1
@@ -37,6 +37,7 @@ echo [3/4] Compiling with Nuitka...
 REM attendance_report.py lives at repo root and is imported by engine — include explicitly.
 python -m nuitka ^
   --onefile ^
+  --assume-yes-for-downloads ^
   --windows-console-mode=disable ^
   --enable-plugin=pyside6 ^
   --include-qt-plugins=platforms ^
