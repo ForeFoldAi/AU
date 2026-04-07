@@ -58,7 +58,7 @@ class DashboardWindow(QMainWindow):
         super().__init__()
         self.user_email    = email
         self.user_password = password
-        self.setWindowTitle("BioTime Attendance System")
+        self.setWindowTitle("AU Infocity - Vendor Attendance & OT Report")
         self.setMinimumSize(1100, 720)
         self.resize(1280, 800)
 
@@ -111,7 +111,7 @@ class DashboardWindow(QMainWindow):
         layout.setSpacing(0)
 
         # ── Brand ─────────────────────────────────────────────────────────────
-        app_name = QLabel("BioTime")
+        app_name = QLabel("AU Infocity")
         app_name.setObjectName("appName")
         layout.addWidget(app_name)
 
@@ -119,14 +119,14 @@ class DashboardWindow(QMainWindow):
         dot.setStyleSheet("color:#2563EB; font-size:20px; font-weight:900; padding:0 6px;")
         layout.addWidget(dot)
 
-        sub = QLabel("Attendance System")
+        sub = QLabel("Vendor Attendance & OT Report")
         sub.setStyleSheet("font-size:13px; color:#64748B; font-weight:500;")
         layout.addWidget(sub)
 
         # ── Inline nav tab buttons — centred between brand and user info ────────
         layout.addStretch(1)
         self._nav_btns: list[QPushButton] = []
-        for i, label in enumerate(["Employee Management", "Weekly Off", "Reports"]):
+        for i, label in enumerate(["Employee Management", " Employee Weekly Off", "Reports"]):
             btn = QPushButton(label)
             btn.setFixedHeight(60)
             btn.setCursor(Qt.PointingHandCursor)

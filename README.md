@@ -59,6 +59,19 @@ Output:
 
 Requires: Python 3.10+ on PATH, a C compiler (Nuitka will hint if missing; MSVC Build Tools on Windows).
 
+### GitHub Actions (direct download for users)
+
+If you want users to directly download a Windows EXE from GitHub:
+
+1. Push this repo to GitHub (workflow file is at `.github/workflows/build-windows-exe.yml`).
+2. Open **Actions** → **Build Windows EXE** → **Run workflow**.
+3. Set `publish_release=true` (optionally set `version`, e.g. `v1.0.1`).
+4. After completion, open **Releases** and share the release URL.
+
+Release assets include:
+- `AttendanceReport-<version>.exe`
+- `AttendanceReport-<version>-win64.zip`
+
 ### macOS / Linux — single binary (not `.exe`)
 
 `.exe` is a Windows format. On macOS/Linux use:
@@ -75,12 +88,16 @@ To ship a **Windows `.exe`**, build on Windows (or a Windows VM/CI) using `build
 
 ## Installer Build (Windows)
 
-1. Install Inno Setup.
-2. Open `installer.iss`.
-3. Compile.
-4. Output installer:
+1. Install [Inno Setup 6](https://jrsoftware.org/isdl.php) (needed to compile `installer.iss`).
+2. From the project folder, run **`build_installer.bat`** (builds the EXE, then runs the Inno compiler).  
+   Or: run **`build_nuitka.bat`**, then open **`installer.iss`** in Inno Setup and click **Compile**.
+3. Output installer:
 
 `build\installer\AttendanceReportSetup.exe`
+
+The installer targets a **per-user** install under `%LocalAppData%\Programs\Attendance Report` so it does **not** require Administrator rights (common fix when “install” fails on locked-down PCs).
+
+**If Windows SmartScreen warns about an unknown publisher:** click **More info** → **Run anyway** (normal for unsigned builds). To remove the warning, sign the EXE/installer with a code-signing certificate.
 
 ## Security Guidelines
 
