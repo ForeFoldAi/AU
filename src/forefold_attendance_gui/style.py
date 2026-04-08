@@ -1,4 +1,4 @@
-"""Centralized QSS stylesheet for the BioTime Attendance GUI."""
+"""Centralized QSS stylesheet for the AU Infocity - Vendor Attendance & OT Report GUI."""
 
 
 def app_stylesheet() -> str:
@@ -442,22 +442,24 @@ QLabel#statLabel {
 }
 
 /* ── Employee table ── */
+/* No border-radius on QTableView — it causes black repaint glitches on macOS. */
 QTableView#employeeTable {
     background-color: #ffffff;
     border: 1px solid #E2E8F0;
-    border-radius: 10px;
+    border-radius: 0px;
     gridline-color: #F1F5F9;
     selection-background-color: #EFF6FF;
     selection-color: #1E293B;
     alternate-background-color: #F8FAFC;
     color: #1E293B;
+    outline: none;
 }
 
 QTableView#employeeTable::item {
     padding: 8px 12px;
     border: none;
     color: #1E293B;
-    background-color: transparent;
+    background-color: #ffffff;
 }
 
 QTableView#employeeTable::item:alternate {
@@ -468,6 +470,42 @@ QTableView#employeeTable::item:alternate {
 QTableView#employeeTable::item:selected {
     background-color: #EFF6FF;
     color: #1E293B;
+}
+
+/* Scrollbars + corner: default can render as a black strip beside the table. */
+QTableView#employeeTable QScrollBar:vertical {
+    background: #ffffff;
+    border: none;
+    width: 10px;
+    margin: 0;
+}
+QTableView#employeeTable QScrollBar::handle:vertical {
+    background: #CBD5E1;
+    border-radius: 4px;
+    min-height: 24px;
+}
+QTableView#employeeTable QScrollBar::add-line:vertical,
+QTableView#employeeTable QScrollBar::sub-line:vertical {
+    height: 0;
+}
+QTableView#employeeTable QScrollBar:horizontal {
+    background: #ffffff;
+    border: none;
+    height: 10px;
+    margin: 0;
+}
+QTableView#employeeTable QScrollBar::handle:horizontal {
+    background: #CBD5E1;
+    border-radius: 4px;
+    min-width: 24px;
+}
+QTableView#employeeTable QScrollBar::add-line:horizontal,
+QTableView#employeeTable QScrollBar::sub-line:horizontal {
+    width: 0;
+}
+QTableView#employeeTable QAbstractScrollArea::corner {
+    background: #ffffff;
+    border: none;
 }
 
 QHeaderView::section {

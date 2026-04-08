@@ -10,8 +10,9 @@ from PySide6.QtCore import (
     QSortFilterProxyModel,
     Qt,
     QThread,
+    QTimer,
 )
-from PySide6.QtGui import QColor, QPainterPath
+from PySide6.QtGui import QColor, QPainterPath, QPalette
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
@@ -24,6 +25,7 @@ from PySide6.QtWidgets import (
     QStackedWidget,
     QStyledItemDelegate,
     QStyleOptionViewItem,
+    QFrame,
     QTableView,
     QVBoxLayout,
     QWidget,
@@ -40,18 +42,17 @@ DAYS      = store.DAYS  # ["Monday", ..., "Sunday"]
 DAYS_SHORT = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 
 # ── Table columns ──────────────────────────────────────────────────────────────
-#   0         1       2             3        4           5…11
-#  Emp ID | Name | Department | Shift | Weekly Off | Mon … Sun
+#  Emp ID | Name | Area | Department | Shift | Weekly Off | Mon … Sun
 COL_EMP_ID    = 0
 COL_NAME      = 1
-COL_DEPT      = 2
-COL_SHIFT     = 3
-COL_WEEKOFF   = 4                          # text summary
-COL_DAY_FIRST = 5                          # Monday  (radio)
-COL_DAY_LAST  = COL_DAY_FIRST + 6         # Sunday  (radio, inclusive)
+COL_AREA      = 2
+COL_DEPT      = 3
+COL_SHIFT     = 4
+COL_WEEKOFF   = 5
+COL_DAY_FIRST = 6
+COL_DAY_LAST  = COL_DAY_FIRST + 6
 
-_DAY_HEADERS = ["Emp ID", "Name", "Department", "Shift", "Weekly Off"] + DAYS_SHORT
-# Total columns = 12
+_DAY_HEADERS = ["Employee ID", "Name", "Area", "Department", "Shift", "Week off"] + DAYS_SHORT
 
 _PAGE_LOADING = 0
 _PAGE_ERROR   = 1
@@ -83,6 +84,7 @@ class _WeekOffTableModel(QAbstractTableModel):
         if role == Qt.ItemDataRole.DisplayRole:
             if col == COL_EMP_ID:  return emp.emp_id
             if col == COL_NAME:    return emp.name
+            if col == COL_AREA:    return emp.area
             if col == COL_DEPT:    return emp.department
             if col == COL_SHIFT:   return emp.shift
             if col == COL_WEEKOFF:
@@ -187,14 +189,24 @@ class _FilterProxy(QSortFilterProxyModel):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._search = ""
+        self._area   = "All Areas"
         self._dept   = "All Departments"
+        self._shift  = "All Shifts"
 
     def set_search(self, text: str) -> None:
         self._search = text.strip().lower()
         self.invalidateFilter()
 
+    def set_area(self, area: str) -> None:
+        self._area = area
+        self.invalidateFilter()
+
     def set_dept(self, dept: str) -> None:
         self._dept = dept
+        self.invalidateFilter()
+
+    def set_shift(self, shift: str) -> None:
+        self._shift = shift
         self.invalidateFilter()
 
     def filterAcceptsRow(self, source_row: int, source_parent: QModelIndex) -> bool:
@@ -204,10 +216,18 @@ class _FilterProxy(QSortFilterProxyModel):
         if emp is None:
             return True
         if self._search and self._search not in (
-            emp.emp_id.lower() + emp.name.lower() + emp.department.lower()
+            emp.emp_id.lower()
+            + emp.name.lower()
+            + emp.department.lower()
+            + emp.area.lower()
+            + emp.shift.lower()
         ):
             return False
+        if self._area != "All Areas" and emp.area != self._area:
+            return False
         if self._dept != "All Departments" and emp.department != self._dept:
+            return False
+        if self._shift != "All Shifts" and emp.shift != self._shift:
             return False
         return True
 
@@ -464,14 +484,27 @@ class WeekOffTab(QWidget):
         toolbar.setSpacing(10)
         self._search = QLineEdit()
         self._search.setObjectName("searchInput")
-        self._search.setPlaceholderText("Search by name, ID, department…")
+        self._search.setPlaceholderText("Search by name, ID, department, area…")
         self._search.setFixedHeight(36)
-        self._dept_filter = QComboBox()
-        self._dept_filter.setObjectName("filterCombo")
-        self._dept_filter.setFixedHeight(36)
-        self._dept_filter.setMinimumWidth(160)
         toolbar.addWidget(self._search, 1)
-        toolbar.addWidget(self._dept_filter)
+
+        filters = QHBoxLayout()
+        filters.setSpacing(8)
+        for label, combo_attr in (
+            ("Area", "_area_filter"),
+            ("Department", "_dept_filter"),
+            ("Shift", "_shift_filter"),
+        ):
+            lab = QLabel(label)
+            lab.setStyleSheet("color:#64748B; font-size:12px;")
+            cb = QComboBox()
+            cb.setObjectName("filterCombo")
+            cb.setFixedHeight(36)
+            cb.setMinimumWidth(150)
+            setattr(self, combo_attr, cb)
+            filters.addWidget(lab)
+            filters.addWidget(cb)
+        toolbar.addLayout(filters)
         root.addLayout(toolbar)
 
         # ── Table ─────────────────────────────────────────────────────────────
@@ -483,7 +516,9 @@ class WeekOffTab(QWidget):
         self._proxy = _FilterProxy()
         self._proxy.setSourceModel(self._model)
         self._search.textChanged.connect(self._proxy.set_search)
+        self._area_filter.currentTextChanged.connect(self._proxy.set_area)
         self._dept_filter.currentTextChanged.connect(self._proxy.set_dept)
+        self._shift_filter.currentTextChanged.connect(self._proxy.set_shift)
         self._proxy.modelReset.connect(self._update_count)
         self._proxy.rowsInserted.connect(self._update_count)
         self._proxy.rowsRemoved.connect(self._update_count)
@@ -491,6 +526,11 @@ class WeekOffTab(QWidget):
 
         self.table = QTableView()
         self.table.setObjectName("employeeTable")
+        self.table.setFrameShape(QFrame.Shape.NoFrame)
+        pal = self.table.palette()
+        pal.setColor(QPalette.ColorRole.Base, QColor("#ffffff"))
+        pal.setColor(QPalette.ColorRole.AlternateBase, QColor("#F8FAFC"))
+        self.table.setPalette(pal)
         self.table.setModel(self._proxy)
         self.table.setAlternatingRowColors(True)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
@@ -511,16 +551,20 @@ class WeekOffTab(QWidget):
             self.table.setItemDelegateForColumn(col_idx, self._radio_delegate)
 
         hh = self.table.horizontalHeader()
-        hh.setStretchLastSection(False)
+        # Fill remaining width so no empty (often black) strip appears right of the last column.
+        hh.setStretchLastSection(True)
         hh.setSectionResizeMode(COL_EMP_ID,  QHeaderView.ResizeToContents)
-        hh.setSectionResizeMode(COL_NAME,    QHeaderView.Stretch)
+        hh.setSectionResizeMode(COL_NAME,    QHeaderView.ResizeToContents)
+        hh.setSectionResizeMode(COL_AREA,    QHeaderView.ResizeToContents)
         hh.setSectionResizeMode(COL_DEPT,    QHeaderView.ResizeToContents)
         hh.setSectionResizeMode(COL_SHIFT,   QHeaderView.ResizeToContents)
         hh.setSectionResizeMode(COL_WEEKOFF, QHeaderView.Fixed)
         hh.resizeSection(COL_WEEKOFF, 100)
-        for col_idx in range(COL_DAY_FIRST, COL_DAY_LAST + 1):
+        for col_idx in range(COL_DAY_FIRST, COL_DAY_LAST):
             hh.setSectionResizeMode(col_idx, QHeaderView.Fixed)
             hh.resizeSection(col_idx, 52)
+        hh.setSectionResizeMode(COL_DAY_LAST, QHeaderView.Stretch)
+        hh.resizeSection(COL_DAY_LAST, 52)
 
         self.table.verticalHeader().setDefaultSectionSize(46)
 
@@ -557,9 +601,10 @@ class WeekOffTab(QWidget):
         self._refresh_btn.setEnabled(True)
         weekoffs = store.load()
         self._model.reload(self._all_employees, weekoffs)
-        self._rebuild_dept_combo()
+        self._rebuild_filter_combos()
         self._update_count()
         self._stack.setCurrentIndex(_PAGE_TABLE)
+        QTimer.singleShot(0, self._fit_name_column_width)
 
     def _on_fetch_error(self, message: str):
         self._refresh_btn.setEnabled(True)
@@ -585,13 +630,25 @@ class WeekOffTab(QWidget):
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 
-    def _rebuild_dept_combo(self):
+    def _fit_name_column_width(self) -> None:
+        """Size Name column to the widest full name so text is not truncated."""
+        self.table.resizeColumnToContents(COL_NAME)
+
+    def _rebuild_filter_combos(self):
+        areas = sorted({e.area for e in self._all_employees})
         depts = sorted({e.department for e in self._all_employees})
-        self._dept_filter.blockSignals(True)
-        self._dept_filter.clear()
-        self._dept_filter.addItem("All Departments")
-        self._dept_filter.addItems(depts)
-        self._dept_filter.blockSignals(False)
+        shifts = sorted({e.shift for e in self._all_employees if e.shift != "—"})
+
+        def _fill(cb: QComboBox, all_label: str, items: list[str]) -> None:
+            cb.blockSignals(True)
+            cb.clear()
+            cb.addItem(all_label)
+            cb.addItems(items)
+            cb.blockSignals(False)
+
+        _fill(self._area_filter, "All Areas", areas)
+        _fill(self._dept_filter, "All Departments", depts)
+        _fill(self._shift_filter, "All Shifts", shifts)
 
     def _update_count(self):
         shown      = self._proxy.rowCount()

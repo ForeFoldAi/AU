@@ -800,7 +800,7 @@ def _get_rule(dept_name):
 #  MAIN
 # ══════════════════════════════════════════════════════════════════════════════
 def main():
-    p = argparse.ArgumentParser(description="BioTime Attendance Report v2")
+    p = argparse.ArgumentParser(description="AU Infocity - Vendor Attendance & OT Report v2")
     p.add_argument("--month",    type=int, default=CONFIG["month"])
     p.add_argument("--year",     type=int, default=CONFIG["year"])
     p.add_argument("--email",    default=CONFIG["email"])

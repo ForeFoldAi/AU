@@ -17,7 +17,6 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from forefold_attendance_gui.dashboard.employees.tab import EmployeeTab
 from forefold_attendance_gui.dashboard.reports.tab import ReportsTab
 from forefold_attendance_gui.weekoff.tab import WeekOffTab
 
@@ -65,9 +64,21 @@ class DashboardWindow(QMainWindow):
         self._status = QStatusBar()
         self._status.showMessage("Ready")
         self.setStatusBar(self._status)
+        self._add_footer_to_status_bar()
 
         self._build_ui()
         self._center()
+
+    def _add_footer_to_status_bar(self) -> None:
+        """Right-aligned credit beside the normal status message (e.g. Ready)."""
+        foot = QLabel(
+            '<a href="https://forefoldai.com" style="color:#64748B; text-decoration:none;">'
+            "Developed by ForeFold AI</a>"
+        )
+        foot.setTextFormat(Qt.TextFormat.RichText)
+        foot.setOpenExternalLinks(True)
+        foot.setStyleSheet("font-size: 11px; padding-right: 8px;")
+        self._status.addPermanentWidget(foot)
 
     # ── UI construction ───────────────────────────────────────────────────────
 
@@ -80,18 +91,16 @@ class DashboardWindow(QMainWindow):
 
         # Build content pages first (nav buttons reference the stack)
         self._stack   = QStackedWidget()
-        self._emp_tab = EmployeeTab(self.user_email, self.user_password)
         self._wo_tab  = WeekOffTab(self.user_email, self.user_password)
         self._rep_tab = ReportsTab(self.user_email, self.user_password, self._status)
-        self._stack.addWidget(self._emp_tab)   # page 0
-        self._stack.addWidget(self._wo_tab)    # page 1
-        self._stack.addWidget(self._rep_tab)   # page 2
+        self._stack.addWidget(self._wo_tab)    # page 0
+        self._stack.addWidget(self._rep_tab)   # page 1
 
         outer.addWidget(self._make_header())
         outer.addWidget(self._stack, 1)
 
         self.setCentralWidget(root)
-        self._switch_page(0)  # activate Employee Management on launch
+        self._switch_page(0)  # Employee Weekly Off on launch
 
     def _make_header(self) -> QWidget:
         bar = QWidget()
@@ -126,7 +135,7 @@ class DashboardWindow(QMainWindow):
         # ── Inline nav tab buttons — centred between brand and user info ────────
         layout.addStretch(1)
         self._nav_btns: list[QPushButton] = []
-        for i, label in enumerate(["Employee Management", " Employee Weekly Off", "Reports"]):
+        for i, label in enumerate(["Employee Weekly Off", "Reports"]):
             btn = QPushButton(label)
             btn.setFixedHeight(60)
             btn.setCursor(Qt.PointingHandCursor)

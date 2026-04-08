@@ -43,7 +43,7 @@ class LoginWindow(QMainWindow):
         self.setObjectName("loginWindow")
         self.resize(960, 640)
         self.setMinimumSize(480, 420)
-        self.setWindowTitle("BioTime Attendance System")
+        self.setWindowTitle("AU Infocity - Vendor Attendance & OT Report")
         screen = QApplication.primaryScreen().geometry()
         self.move(
             (screen.width()  - 960) // 2,
@@ -77,7 +77,7 @@ class LoginWindow(QMainWindow):
         card.setGraphicsEffect(shadow)
 
         # Header
-        title = QLabel("BioTime Attendance System")
+        title = QLabel("AU Infocity - Vendor Attendance & OT Report")
         title.setObjectName("titleLabel")
         title.setAlignment(Qt.AlignCenter)
         title.setWordWrap(True)

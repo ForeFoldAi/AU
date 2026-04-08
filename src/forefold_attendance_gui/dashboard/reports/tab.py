@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import calendar
 from datetime import datetime
+from pathlib import Path
 
-from PySide6.QtCore import Qt, QThread
-from PySide6.QtGui import QColor, QFont, QTextCursor
+from PySide6.QtCore import QStandardPaths, Qt, QThread
 from PySide6.QtWidgets import (
     QComboBox,
     QFileDialog,
@@ -18,10 +18,8 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QMessageBox,
     QPushButton,
-    QSizePolicy,
     QSpinBox,
     QStatusBar,
-    QTextEdit,
     QVBoxLayout,
     QWidget,
 )
@@ -48,6 +46,7 @@ class ReportsTab(QWidget):
         self._thread: QThread | None = None
         self._worker: ReportWorker | None = None
         self._thread_is_running = False
+        self._output_manual = False
         self._build_ui()
 
     # ── UI construction ───────────────────────────────────────────────────────
@@ -57,7 +56,6 @@ class ReportsTab(QWidget):
         root.setContentsMargins(24, 20, 24, 20)
         root.setSpacing(16)
 
-        # Section header
         header = QVBoxLayout()
         header.setSpacing(4)
         title = QLabel("Attendance Reports")
@@ -68,13 +66,11 @@ class ReportsTab(QWidget):
         header.addWidget(subtitle)
         root.addLayout(header)
 
-        # Divider
         divider = QFrame()
         divider.setFrameShape(QFrame.HLine)
         divider.setStyleSheet("color: #E2E8F0;")
         root.addWidget(divider)
 
-        # ── Report Configuration ─────────────────────────────────────────────
         period = QGroupBox("Report Configuration")
         period_grid = QGridLayout(period)
         period_grid.setSpacing(10)
@@ -95,12 +91,11 @@ class ReportsTab(QWidget):
         period_grid.setColumnStretch(4, 1)
         root.addWidget(period)
 
-        # ── Output ───────────────────────────────────────────────────────────
         out = QGroupBox("Output")
         out_row = QHBoxLayout(out)
         out_row.setSpacing(10)
         self.output = QLineEdit()
-        self.output.setPlaceholderText("Optional: choose where to save the report")
+        self.output.setPlaceholderText("Save location (default: Downloads)")
         browse = QPushButton("Browse…")
         browse.clicked.connect(self._browse_output)
         out_row.addWidget(QLabel("Save As"))
@@ -108,69 +103,72 @@ class ReportsTab(QWidget):
         out_row.addWidget(browse)
         root.addWidget(out)
 
-        # ── Actions ──────────────────────────────────────────────────────────
         actions_box = QGroupBox("Actions")
         buttons = QHBoxLayout(actions_box)
         buttons.setSpacing(10)
         self.btn_run = QPushButton("Generate Report")
         self.btn_run.setObjectName("primaryButton")
-        self.btn_auth = QPushButton("Test Authentication")
-        self.btn_auth.setObjectName("secondaryButton")
-        self.btn_clear = QPushButton("Clear Log")
-        self.btn_clear.setObjectName("tertiaryButton")
         self.btn_run.clicked.connect(self._run_report)
-        self.btn_auth.clicked.connect(self._run_auth)
-        self.btn_clear.clicked.connect(self._clear_log)
         buttons.addWidget(self.btn_run)
-        buttons.addWidget(self.btn_auth)
-        buttons.addWidget(self.btn_clear)
         buttons.addStretch(1)
         root.addWidget(actions_box)
 
-        # ── Log ──────────────────────────────────────────────────────────────
-        logs_box = QGroupBox("Execution Log")
-        logs_layout = QVBoxLayout(logs_box)
-        self.log = QTextEdit()
-        self.log.setObjectName("logView")
-        self.log.setReadOnly(True)
-        self.log.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        self.log.setPlaceholderText("Execution logs will appear here…")
-        self.log.setFont(QFont("Consolas", 9))
-        logs_layout.addWidget(self.log)
-        root.addWidget(logs_box, 1)
+        root.addStretch(1)
 
+        self.month.currentIndexChanged.connect(self._on_period_changed)
+        self.year.valueChanged.connect(self._on_period_changed)
+
+        self._apply_default_output_path()
         self._update_actions_enabled()
+
+    def _downloads_dir(self) -> Path | None:
+        loc = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.DownloadLocation)
+        return Path(loc) if loc else None
+
+    def _default_report_filename(self) -> str:
+        mo = calendar.month_name[self.month.currentIndex() + 1]
+        return f"Attendance_{mo}_{self.year.value()}.xlsx"
+
+    def _apply_default_output_path(self) -> None:
+        if self._output_manual:
+            return
+        base = self._downloads_dir()
+        if base:
+            self.output.setText(str(base / self._default_report_filename()))
+
+    def _on_period_changed(self) -> None:
+        self._apply_default_output_path()
 
     # ── Slots ─────────────────────────────────────────────────────────────────
 
     def _browse_output(self):
-        default = f"Attendance_{self.month.currentText()}_{self.year.value()}.xlsx"
+        default = self._default_report_filename()
+        base = self._downloads_dir() or Path.home()
         path, _ = QFileDialog.getSaveFileName(
-            self, "Select Output Path", default, "Excel Files (*.xlsx)"
+            self, "Select Output Path", str(base / default), "Excel Files (*.xlsx)"
         )
         if path:
+            self._output_manual = True
             self.output.setText(path)
 
-    def _clear_log(self):
-        self.log.clear()
-
-    def _run_auth(self):
-        self._execute(auth_only=True)
-
     def _run_report(self):
-        self._execute(auth_only=False)
+        self._execute()
 
-    def _execute(self, auth_only: bool):
+    def _execute(self) -> None:
+        out = self.output.text().strip()
+        if not out:
+            self._apply_default_output_path()
+            out = self.output.text().strip()
+        if not out:
+            QMessageBox.warning(self, "Output path", "Choose where to save the report.")
+            return
+
         cfg = self._build_cfg()
         self._set_busy(True)
-        self._log_info(
-            f"Starting {'authentication test' if auth_only else 'report generation'}…"
-        )
         self._thread = QThread(self)
-        self._worker = ReportWorker(cfg, self.output.text().strip(), auth_only)
+        self._worker = ReportWorker(cfg, out, auth_only=False)
         self._worker.moveToThread(self._thread)
         self._thread.started.connect(self._worker.run)
-        self._worker.log.connect(self._log_info)
         self._worker.finished.connect(self._on_success)
         self._worker.failed.connect(self._on_error)
         self._worker.finished.connect(self._cleanup_thread)
@@ -178,16 +176,15 @@ class ReportsTab(QWidget):
         self._thread.start()
 
     def _on_success(self, message: str):
-        self._log_success(message)
         self._set_busy(False)
         self._status_bar.showMessage("Done")
         QMessageBox.information(self, "Success", message)
 
     def _on_error(self, message: str):
-        self._log_error(message)
         self._set_busy(False)
         self._status_bar.showMessage("Error")
-        QMessageBox.critical(self, "Error", message.splitlines()[0])
+        first = message.strip().splitlines()[0] if message.strip() else "Something went wrong."
+        QMessageBox.critical(self, "Error", first)
 
     def _cleanup_thread(self):
         if self._thread:
@@ -219,25 +216,4 @@ class ReportsTab(QWidget):
         self._status_bar.showMessage("Processing…" if busy else "Ready")
 
     def _update_actions_enabled(self):
-        can = not self._thread_is_running
-        self.btn_run.setEnabled(can)
-        self.btn_auth.setEnabled(can)
-
-    def _append_log(self, text: str, color: str):
-        if not text:
-            return
-        cursor = self.log.textCursor()
-        cursor.movePosition(QTextCursor.End)
-        self.log.setTextCursor(cursor)
-        self.log.setTextColor(QColor(color))
-        self.log.insertPlainText(text + "\n")
-        self.log.ensureCursorVisible()
-
-    def _log_info(self, text: str):
-        self._append_log(text, "#94A3B8")
-
-    def _log_success(self, text: str):
-        self._append_log(text, "#4ADE80")
-
-    def _log_error(self, text: str):
-        self._append_log(text, "#F87171")
+        self.btn_run.setEnabled(not self._thread_is_running)

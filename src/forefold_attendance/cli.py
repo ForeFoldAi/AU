@@ -9,7 +9,7 @@ from .engine import generate_report
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="BioTime Attendance Report CLI")
+    parser = argparse.ArgumentParser(description="AU Infocity - Vendor Attendance & OT Report CLI")
     parser.add_argument("--base-url", required=True)
     parser.add_argument("--company", default="")
     parser.add_argument("--email", required=True)

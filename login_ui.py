@@ -206,7 +206,7 @@ class LoginCard(QWidget):
         layout.setSpacing(0)
 
         # ── Header ──────────────────────────────
-        title = QLabel("BioTime Attendance System")
+        title = QLabel("AU Infocity - Vendor Attendance & OT Report")
         title.setObjectName("titleLabel")
         title.setAlignment(Qt.AlignCenter)
         title.setWordWrap(True)
