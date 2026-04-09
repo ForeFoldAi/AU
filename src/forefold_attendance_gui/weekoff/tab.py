@@ -34,6 +34,7 @@ from PySide6.QtWidgets import (
 from forefold_attendance_gui.api.client import PersonnelData
 from forefold_attendance_gui.api.worker import FetchWorker, start_fetch
 from forefold_attendance_gui.dashboard.employees.model import Employee, employees_from_api
+from forefold_attendance_gui.imports_store import enrich_employees_from_imports
 from forefold_attendance_gui.weekoff import store
 
 _BACKEND_COMPANY = "auinfocity"
@@ -42,17 +43,21 @@ DAYS      = store.DAYS  # ["Monday", ..., "Sunday"]
 DAYS_SHORT = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 
 # ── Table columns ──────────────────────────────────────────────────────────────
-#  Emp ID | Name | Area | Department | Shift | Weekly Off | Mon … Sun
-COL_EMP_ID    = 0
-COL_NAME      = 1
-COL_AREA      = 2
-COL_DEPT      = 3
-COL_SHIFT     = 4
-COL_WEEKOFF   = 5
-COL_DAY_FIRST = 6
-COL_DAY_LAST  = COL_DAY_FIRST + 6
+#  Emp ID | Name | Area | Department | Shift | Shift timing | Weekly Off | Mon … Sun
+COL_EMP_ID         = 0
+COL_NAME           = 1
+COL_AREA           = 2
+COL_DEPT           = 3
+COL_SHIFT          = 4
+COL_SHIFT_TIMING   = 5
+COL_WEEKOFF        = 6
+COL_DAY_FIRST      = 7
+COL_DAY_LAST       = COL_DAY_FIRST + 6
 
-_DAY_HEADERS = ["Employee ID", "Name", "Area", "Department", "Shift", "Week off"] + DAYS_SHORT
+_DAY_HEADERS = (
+    ["Employee ID", "Name", "Area", "Department", "Shift", "Shift timing", "Week off"]
+    + DAYS_SHORT
+)
 
 _PAGE_LOADING = 0
 _PAGE_ERROR   = 1
@@ -86,7 +91,9 @@ class _WeekOffTableModel(QAbstractTableModel):
             if col == COL_NAME:    return emp.name
             if col == COL_AREA:    return emp.area
             if col == COL_DEPT:    return emp.department
-            if col == COL_SHIFT:   return emp.shift
+            if col == COL_SHIFT:   return emp.display_shift
+            if col == COL_SHIFT_TIMING:
+                return emp.shift_timing or "—"
             if col == COL_WEEKOFF:
                 # Text summary of the assigned day (or "—")
                 return self._weekoffs.get(emp.emp_id) or "—"
@@ -215,19 +222,23 @@ class _FilterProxy(QSortFilterProxyModel):
         )
         if emp is None:
             return True
+        ds = emp.display_shift
+        st = (emp.shift_timing or "").lower()
         if self._search and self._search not in (
             emp.emp_id.lower()
             + emp.name.lower()
             + emp.department.lower()
             + emp.area.lower()
-            + emp.shift.lower()
+            + ds.lower()
+            + (emp.import_shift_name or "").lower()
+            + st
         ):
             return False
         if self._area != "All Areas" and emp.area != self._area:
             return False
         if self._dept != "All Departments" and emp.department != self._dept:
             return False
-        if self._shift != "All Shifts" and emp.shift != self._shift:
+        if self._shift != "All Shifts" and ds != self._shift:
             return False
         return True
 
@@ -484,7 +495,9 @@ class WeekOffTab(QWidget):
         toolbar.setSpacing(10)
         self._search = QLineEdit()
         self._search.setObjectName("searchInput")
-        self._search.setPlaceholderText("Search by name, ID, department, area…")
+        self._search.setPlaceholderText(
+            "Search by name, ID, department, area, shift, shift timing…"
+        )
         self._search.setFixedHeight(36)
         toolbar.addWidget(self._search, 1)
 
@@ -557,7 +570,8 @@ class WeekOffTab(QWidget):
         hh.setSectionResizeMode(COL_NAME,    QHeaderView.ResizeToContents)
         hh.setSectionResizeMode(COL_AREA,    QHeaderView.ResizeToContents)
         hh.setSectionResizeMode(COL_DEPT,    QHeaderView.ResizeToContents)
-        hh.setSectionResizeMode(COL_SHIFT,   QHeaderView.ResizeToContents)
+        hh.setSectionResizeMode(COL_SHIFT,         QHeaderView.ResizeToContents)
+        hh.setSectionResizeMode(COL_SHIFT_TIMING,  QHeaderView.ResizeToContents)
         hh.setSectionResizeMode(COL_WEEKOFF, QHeaderView.Fixed)
         hh.resizeSection(COL_WEEKOFF, 100)
         for col_idx in range(COL_DAY_FIRST, COL_DAY_LAST):
@@ -597,7 +611,7 @@ class WeekOffTab(QWidget):
         )
 
     def _on_data_ready(self, data: PersonnelData):
-        self._all_employees = employees_from_api(data)
+        self._all_employees = enrich_employees_from_imports(employees_from_api(data))
         self._refresh_btn.setEnabled(True)
         weekoffs = store.load()
         self._model.reload(self._all_employees, weekoffs)
@@ -637,7 +651,9 @@ class WeekOffTab(QWidget):
     def _rebuild_filter_combos(self):
         areas = sorted({e.area for e in self._all_employees})
         depts = sorted({e.department for e in self._all_employees})
-        shifts = sorted({e.shift for e in self._all_employees if e.shift != "—"})
+        shifts = sorted(
+            {e.display_shift for e in self._all_employees if e.display_shift != "—"}
+        )
 
         def _fill(cb: QComboBox, all_label: str, items: list[str]) -> None:
             cb.blockSignals(True)

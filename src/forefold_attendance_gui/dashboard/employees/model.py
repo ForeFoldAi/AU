@@ -33,6 +33,16 @@ class Employee:
     area:       str
     shift:      str
     status:     str = "Active"
+    import_shift_name: str = ""
+    shift_timing: str = "—"
+
+    @property
+    def display_shift(self) -> str:
+        """Shift label for UI: imported schedule name when present, else API shift."""
+        imp = (self.import_shift_name or "").strip()
+        if imp:
+            return imp
+        return self.shift if (self.shift or "").strip() and self.shift != "—" else "—"
 
     @classmethod
     def from_api(cls, raw: dict) -> "Employee":

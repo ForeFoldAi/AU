@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from forefold_attendance_gui.dashboard.imports.tab import ImportsTab
 from forefold_attendance_gui.dashboard.reports.tab import ReportsTab
 from forefold_attendance_gui.weekoff.tab import WeekOffTab
 
@@ -92,9 +93,11 @@ class DashboardWindow(QMainWindow):
         # Build content pages first (nav buttons reference the stack)
         self._stack   = QStackedWidget()
         self._wo_tab  = WeekOffTab(self.user_email, self.user_password)
+        self._imp_tab = ImportsTab()
         self._rep_tab = ReportsTab(self.user_email, self.user_password, self._status)
         self._stack.addWidget(self._wo_tab)    # page 0
-        self._stack.addWidget(self._rep_tab)   # page 1
+        self._stack.addWidget(self._imp_tab)   # page 1
+        self._stack.addWidget(self._rep_tab)   # page 2
 
         outer.addWidget(self._make_header())
         outer.addWidget(self._stack, 1)
@@ -135,7 +138,7 @@ class DashboardWindow(QMainWindow):
         # ── Inline nav tab buttons — centred between brand and user info ────────
         layout.addStretch(1)
         self._nav_btns: list[QPushButton] = []
-        for i, label in enumerate(["Employee Weekly Off", "Reports"]):
+        for i, label in enumerate(["Employee Weekly Off", "Imports", "Reports"]):
             btn = QPushButton(label)
             btn.setFixedHeight(60)
             btn.setCursor(Qt.PointingHandCursor)

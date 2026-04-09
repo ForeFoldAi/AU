@@ -3,8 +3,8 @@ setlocal EnableExtensions
 
 REM Production build for Windows:
 REM - GUI: PySide6
-REM - Compiler: Nuitka (single EXE)
-REM - Output: build\AttendanceReport.exe
+REM - Compiler: Nuitka (standalone folder - Windows friendly)
+REM - Output: build\AttendanceReport.dist\AttendanceReport.exe
 
 echo.
 echo ==============================================
@@ -36,11 +36,11 @@ if exist run_gui.onefile-build rmdir /s /q run_gui.onefile-build
 echo [3/4] Compiling with Nuitka...
 REM attendance_report.py lives at repo root and is imported by engine — include explicitly.
 python -m nuitka ^
-  --onefile ^
+  --standalone ^
   --assume-yes-for-downloads ^
   --windows-console-mode=disable ^
   --enable-plugin=pyside6 ^
-  --include-qt-plugins=platforms ^
+  --include-qt-plugins=platforms,styles,imageformats ^
   --include-module=attendance_report ^
   --windows-company-name="AUINFOCITY" ^
   --windows-product-name="Attendance Report" ^
@@ -56,6 +56,6 @@ if errorlevel 1 (
 )
 
 echo [4/4] Build complete.
-echo EXE: build\AttendanceReport.exe
+echo EXE: build\AttendanceReport.dist\AttendanceReport.exe
 echo.
 endlocal

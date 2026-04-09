@@ -1,5 +1,5 @@
 ; Inno Setup 6 — builds a Windows installer for the Nuitka onefile EXE.
-; Prerequisite: run build_nuitka.bat first so build\AttendanceReport.exe exists.
+; Prerequisite: run build_nuitka.bat first so build\AttendanceReport.dist exists.
 
 #define AppName "Attendance Report"
 #define AppVersion "1.0.0"
@@ -34,7 +34,8 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Additional icons:"; Flags: unchecked
 
 [Files]
-Source: "build\{#AppExeName}"; DestDir: "{app}"; Flags: ignoreversion
+; Standalone build: include the entire dist folder so all DLLs/Qt plugins ship.
+Source: "build\AttendanceReport.dist\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
 Name: "{autoprograms}\{#AppName}"; Filename: "{app}\{#AppExeName}"
@@ -48,7 +49,7 @@ function InitializeSetup: Boolean;
 var
   Path: String;
 begin
-  Path := ExpandConstant('{src}\build\{#AppExeName}');
+  Path := ExpandConstant('{src}\build\AttendanceReport.dist\{#AppExeName}');
   if not FileExists(Path) then
   begin
     MsgBox('Missing: ' + Path + #13#10 + #13#10 +
