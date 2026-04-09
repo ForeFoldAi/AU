@@ -67,6 +67,28 @@ jobs:
             --output-filename=AttendanceReport.exe `
             run_gui.py
 
+      - name: Normalize dist folder name
+        shell: pwsh
+        run: |
+          $distDirs = Get-ChildItem -Path build -Directory -Filter "*.dist" -ErrorAction SilentlyContinue
+          if (-not $distDirs -or $distDirs.Count -eq 0) {
+            throw "No .dist folder found under build after Nuitka compile."
+          }
+          if ($distDirs.Count -gt 1) {
+            Write-Host "Found multiple .dist folders:"
+            $distDirs | ForEach-Object { Write-Host " - $($_.FullName)" }
+            throw "Ambiguous .dist output. Please keep only one build target."
+          }
+          $src = $distDirs[0].FullName
+          $dst = Join-Path (Resolve-Path "build").Path "AttendanceReport.dist"
+          if ($src -ne $dst) {
+            if (Test-Path $dst) { Remove-Item -Recurse -Force $dst }
+            Move-Item -Path $src -Destination $dst
+          }
+          if (-not (Test-Path (Join-Path $dst "AttendanceReport.exe"))) {
+            throw "AttendanceReport.exe not found in normalized dist folder: $dst"
+          }
+
       - name: Create portable ZIP
         shell: pwsh
         run: |

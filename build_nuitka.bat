@@ -56,6 +56,24 @@ if errorlevel 1 (
 )
 
 echo [4/4] Build complete.
+if exist build\run_gui.dist (
+  if exist build\AttendanceReport.dist rmdir /s /q build\AttendanceReport.dist
+  move /Y build\run_gui.dist build\AttendanceReport.dist >NUL
+)
+if not exist build\AttendanceReport.dist (
+  for /d %%D in (build\*.dist) do (
+    if /I not "%%~nxD"=="AttendanceReport.dist" (
+      if exist build\AttendanceReport.dist rmdir /s /q build\AttendanceReport.dist
+      move /Y "%%D" build\AttendanceReport.dist >NUL
+      goto :dist_done
+    )
+  )
+)
+:dist_done
+if not exist build\AttendanceReport.dist\AttendanceReport.exe (
+  echo ERROR: Expected build\AttendanceReport.dist\AttendanceReport.exe not found.
+  exit /b 1
+)
 echo EXE: build\AttendanceReport.dist\AttendanceReport.exe
 echo.
 endlocal
