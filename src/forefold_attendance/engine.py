@@ -122,6 +122,20 @@ def generate_report(cfg: Dict[str, Any], output: Optional[str] = None) -> tuple[
             if ec:
                 txns_by_emp[ec].append(t)
 
+        filter_area = (merged_cfg.get("filter_area") or "").strip()
+        if filter_area:
+            fa = filter_area.casefold()
+            before = len(raw_emps)
+            raw_emps = [
+                e for e in raw_emps
+                if legacy.employee_area(e).strip().casefold() == fa
+            ]
+            print(
+                f"OK  Area filter {filter_area!r}: {len(raw_emps)} of {before} employees"
+            )
+            if not raw_emps:
+                print("WARN  No employees match the selected area; the report will be empty.")
+
         user_weekoffs = legacy.load_user_weekoffs()
         emp_rows = []
         unknown_depts = set()
@@ -135,7 +149,7 @@ def generate_report(cfg: Dict[str, Any], output: Optional[str] = None) -> tuple[
 
             weekly_off_days = legacy.employee_weekly_off_days(user_weekoffs, ec)
             effective_rule = {**rule, "weekly_off_days": weekly_off_days}
-            calc = legacy.AttendanceCalculator(dept_name, effective_rule)
+            calc = legacy.AttendanceCalculator(dept_name, effective_rule, desig)
             att, od, oh = calc.compute(txns_by_emp.get(ec, []), merged_cfg["month"], merged_cfg["year"])
             summ = calc.summarize(att, od, oh)
             emp_rows.append(

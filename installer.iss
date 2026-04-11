@@ -1,13 +1,13 @@
 ; Inno Setup 6 — builds a Windows installer for the Nuitka onefile EXE.
 ; Prerequisite: run build_nuitka.bat first so build\AttendanceReport.dist exists.
 
-#define AppName "Attendance Report"
+#define AppName "ForeFold Report Generator"
 #define AppVersion "1.0.0"
-#define AppPublisher "AUINFOCITY"
+#define AppPublisher "ForeFold AI"
 #define AppExeName "AttendanceReport.exe"
 
 [Setup]
-AppId={{A2642365-4E06-40FD-9696-221E07D0BD43}
+AppId={{E7D1F9A3-2B8C-4D6E-A1F0-9C8B7A6D5E4F}
 AppName={#AppName}
 AppVersion={#AppVersion}
 AppPublisher={#AppPublisher}
@@ -16,7 +16,7 @@ PrivilegesRequired=lowest
 DefaultDirName={localappdata}\Programs\{#AppName}
 DefaultGroupName={#AppName}
 OutputDir=build\installer
-OutputBaseFilename=AttendanceReportSetup
+OutputBaseFilename=ForeFoldReportGeneratorSetup
 Compression=lzma
 SolidCompression=yes
 WizardStyle=modern

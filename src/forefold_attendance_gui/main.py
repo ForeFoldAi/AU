@@ -6,8 +6,8 @@ import re
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QColor, QFont
+from PySide6.QtCore import Qt, QThread, Signal
+from PySide6.QtGui import QColor, QFont, QIcon
 from PySide6.QtWidgets import (
     QApplication,
     QFrame,
@@ -27,6 +27,9 @@ SRC_DIR = PROJECT_ROOT / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
+from forefold_attendance_gui.api.worker import LoginAuthWorker  # noqa: E402
+from forefold_attendance_gui.branding import APP_DISPLAY_NAME, public_logo_path  # noqa: E402
+from forefold_attendance_gui.constants import BACKEND_COMPANY, PRODUCT_WINDOW_TITLE  # noqa: E402
 from forefold_attendance_gui.dashboard.window import DashboardWindow  # noqa: E402
 from forefold_attendance_gui.style import app_stylesheet              # noqa: E402
 
@@ -43,7 +46,12 @@ class LoginWindow(QMainWindow):
         self.setObjectName("loginWindow")
         self.resize(960, 640)
         self.setMinimumSize(480, 420)
-        self.setWindowTitle("AU Infocity - Vendor Attendance & OT Report")
+        self.setWindowTitle(PRODUCT_WINDOW_TITLE)
+        self._login_thread: QThread | None = None
+        self._login_worker: LoginAuthWorker | None = None
+        self._pending_email = ""
+        self._pending_password = ""
+        self._login_btn_idle_text = "Sign In"
         screen = QApplication.primaryScreen().geometry()
         self.move(
             (screen.width()  - 960) // 2,
@@ -77,7 +85,7 @@ class LoginWindow(QMainWindow):
         card.setGraphicsEffect(shadow)
 
         # Header
-        title = QLabel("AU Infocity - Vendor Attendance & OT Report")
+        title = QLabel(PRODUCT_WINDOW_TITLE)
         title.setObjectName("titleLabel")
         title.setAlignment(Qt.AlignCenter)
         title.setWordWrap(True)
@@ -136,12 +144,12 @@ class LoginWindow(QMainWindow):
         self.error_label.setObjectName("errorLabel")
         self.error_label.setAlignment(Qt.AlignCenter)
         self.error_label.setWordWrap(True)
-        self.error_label.setFixedHeight(18)
+        self.error_label.setMinimumHeight(22)
         card_layout.addWidget(self.error_label)
         card_layout.addSpacing(14)
 
         # Sign In
-        self.login_btn = QPushButton("Sign In")
+        self.login_btn = QPushButton(self._login_btn_idle_text)
         self.login_btn.setObjectName("loginButton")
         self.login_btn.setFixedHeight(44)
         self.login_btn.setCursor(Qt.PointingHandCursor)
@@ -204,7 +212,48 @@ class LoginWindow(QMainWindow):
             self.password_input.setFocus()
             return
 
-        self.login_success.emit(email, password)
+        if self._login_thread is not None and self._login_thread.isRunning():
+            return
+
+        self._pending_email = email
+        self._pending_password = password
+        self._set_login_busy(True)
+        self._login_thread = QThread(self)
+        self._login_worker = LoginAuthWorker(email, password, BACKEND_COMPANY)
+        self._login_worker.moveToThread(self._login_thread)
+        self._login_thread.started.connect(self._login_worker.run)
+        self._login_worker.finished.connect(self._on_login_auth_ok)
+        self._login_worker.failed.connect(self._on_login_auth_failed)
+        self._login_worker.finished.connect(self._cleanup_login_thread)
+        self._login_worker.failed.connect(self._cleanup_login_thread)
+        self._login_thread.start()
+
+    def _on_login_auth_ok(self):
+        self._set_login_busy(False)
+        self.login_success.emit(self._pending_email, self._pending_password)
+
+    def _on_login_auth_failed(self, _message: str):
+        self._set_login_busy(False)
+        self._show_error("Invalid email or password.")
+
+    def _cleanup_login_thread(self):
+        if self._login_thread:
+            self._login_thread.quit()
+            self._login_thread.wait(8000)
+        self._login_thread = None
+        self._login_worker = None
+
+    def _set_login_busy(self, busy: bool):
+        self.login_btn.setEnabled(not busy)
+        self.login_btn.setText("Signing in…" if busy else self._login_btn_idle_text)
+        self.email_input.setEnabled(not busy)
+        self.password_input.setEnabled(not busy)
+        self.toggle_password.setEnabled(not busy)
+        if busy:
+            QApplication.setOverrideCursor(Qt.WaitCursor)
+        else:
+            while QApplication.overrideCursor() is not None:
+                QApplication.restoreOverrideCursor()
 
     def _toggle_password_visibility(self):
         if self.password_input.echoMode() == QLineEdit.Password:
@@ -222,6 +271,10 @@ class LoginWindow(QMainWindow):
 def run():
     app = QApplication(sys.argv)
     app.setAttribute(Qt.AA_DontUseNativeMenuBar, True)
+    app.setApplicationName(APP_DISPLAY_NAME)
+    _lp = public_logo_path()
+    if _lp:
+        app.setWindowIcon(QIcon(str(_lp)))
     app.setStyleSheet(app_stylesheet())
 
     font = QFont()

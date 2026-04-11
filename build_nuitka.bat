@@ -42,8 +42,9 @@ python -m nuitka ^
   --enable-plugin=pyside6 ^
   --include-qt-plugins=platforms,styles,imageformats ^
   --include-module=attendance_report ^
-  --windows-company-name="AUINFOCITY" ^
-  --windows-product-name="Attendance Report" ^
+  --include-data-files=src/public/forefold-logo.png=forefold-logo.png ^
+  --windows-company-name="ForeFold AI" ^
+  --windows-product-name="ForeFold Report Generator" ^
   --windows-file-version=1.0.0.0 ^
   --windows-product-version=1.0.0.0 ^
   --output-dir=build ^

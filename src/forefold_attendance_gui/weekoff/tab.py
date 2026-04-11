@@ -1,6 +1,8 @@
-"""Weekly Off Management tab — assign and persist weekly off days per employee."""
+"""Employee management tab — weekly off assignment and related employee grid."""
 from __future__ import annotations
 
+import sys
+from pathlib import Path
 from typing import Any
 
 from PySide6.QtCore import (
@@ -10,7 +12,6 @@ from PySide6.QtCore import (
     QSortFilterProxyModel,
     Qt,
     QThread,
-    QTimer,
 )
 from PySide6.QtGui import QColor, QPainterPath, QPalette
 from PySide6.QtWidgets import (
@@ -34,6 +35,7 @@ from PySide6.QtWidgets import (
 from forefold_attendance_gui.api.client import PersonnelData
 from forefold_attendance_gui.api.worker import FetchWorker, start_fetch
 from forefold_attendance_gui.dashboard.employees.model import Employee, employees_from_api
+from forefold_attendance_gui.dashboard.imports.tab import ImportsPanel
 from forefold_attendance_gui.imports_store import enrich_employees_from_imports
 from forefold_attendance_gui.weekoff import store
 
@@ -43,7 +45,7 @@ DAYS      = store.DAYS  # ["Monday", ..., "Sunday"]
 DAYS_SHORT = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 
 # ── Table columns ──────────────────────────────────────────────────────────────
-#  Emp ID | Name | Area | Department | Shift | Shift timing | Weekly Off | Mon … Sun
+#  Emp ID | Name | Area | Department | Shift details | Shift time table | Week off | Mon … Sun
 COL_EMP_ID         = 0
 COL_NAME           = 1
 COL_AREA           = 2
@@ -55,13 +57,54 @@ COL_DAY_FIRST      = 7
 COL_DAY_LAST       = COL_DAY_FIRST + 6
 
 _DAY_HEADERS = (
-    ["Employee ID", "Name", "Area", "Department", "Shift", "Shift timing", "Week off"]
+    [
+        "Employee ID",
+        "Name",
+        "Area",
+        "Department",
+        "Shift details",
+        "Shift time table",
+        "Week off",
+    ]
     + DAYS_SHORT
 )
 
 _PAGE_LOADING = 0
 _PAGE_ERROR   = 1
 _PAGE_TABLE   = 2
+
+# Repo root (…/exe) so `attendance_report` can be imported for department rules.
+_PROJECT_ROOT = Path(__file__).resolve().parents[3]
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
+
+_attendance_report = None
+
+
+def _attendance_report_mod():
+    global _attendance_report
+    if _attendance_report is None:
+        import attendance_report as ar  # noqa: PLC0415
+
+        _attendance_report = ar
+    return _attendance_report
+
+
+def _employee_weekly_off_assignable(emp: Employee) -> bool:
+    """False for Security and any dept whose rules have no weekly-off days."""
+    rule = _attendance_report_mod()._get_rule(emp.department or "")
+    return bool(rule.get("weekly_off_days"))
+
+
+def _employee_from_proxy_index(index: QModelIndex) -> Employee | None:
+    m = index.model()
+    if isinstance(m, QSortFilterProxyModel):
+        src = m.mapToSource(index)
+        if not src.isValid():
+            return None
+        sm = m.sourceModel()
+        return sm.data(sm.index(src.row(), 0), Qt.ItemDataRole.UserRole)
+    return m.data(m.index(index.row(), 0), Qt.ItemDataRole.UserRole)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -95,17 +138,28 @@ class _WeekOffTableModel(QAbstractTableModel):
             if col == COL_SHIFT_TIMING:
                 return emp.shift_timing or "—"
             if col == COL_WEEKOFF:
-                # Text summary of the assigned day (or "—")
+                if not _employee_weekly_off_assignable(emp):
+                    return "—"
                 return self._weekoffs.get(emp.emp_id) or "—"
             # Day columns → True if this is the employee's weekly-off day
             if COL_DAY_FIRST <= col <= COL_DAY_LAST:
+                if not _employee_weekly_off_assignable(emp):
+                    return False
                 day_name = DAYS[col - COL_DAY_FIRST]
                 return self._weekoffs.get(emp.emp_id) == day_name
 
         if role == Qt.ItemDataRole.TextAlignmentRole:
             if COL_DAY_FIRST <= col <= COL_DAY_LAST:
-                return Qt.AlignCenter
-            return Qt.AlignVCenter | Qt.AlignLeft
+                return Qt.AlignmentFlag.AlignCenter
+            if col in (
+                COL_EMP_ID,
+                COL_NAME,
+                COL_AREA,
+                COL_DEPT,
+                COL_SHIFT_TIMING,
+            ):
+                return Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter
+            return Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft
 
         if role == Qt.ItemDataRole.ForegroundRole:
             return QColor("#1E293B")
@@ -119,6 +173,9 @@ class _WeekOffTableModel(QAbstractTableModel):
         base = super().flags(index)
         col = index.column()
         if COL_DAY_FIRST <= col <= COL_DAY_LAST:
+            emp = self._employees[index.row()]
+            if not _employee_weekly_off_assignable(emp):
+                return base & ~Qt.ItemFlag.ItemIsEditable
             return base | Qt.ItemFlag.ItemIsEditable
         # COL_WEEKOFF and info columns are read-only
         return base & ~Qt.ItemFlag.ItemIsEditable
@@ -131,6 +188,8 @@ class _WeekOffTableModel(QAbstractTableModel):
             return False
 
         emp = self._employees[index.row()]
+        if not _employee_weekly_off_assignable(emp):
+            return False
         day_name = DAYS[col - COL_DAY_FIRST]
         current  = self._weekoffs.get(emp.emp_id)
 
@@ -151,8 +210,20 @@ class _WeekOffTableModel(QAbstractTableModel):
         orientation: Qt.Orientation,
         role: int = Qt.ItemDataRole.DisplayRole,
     ) -> Any:
-        if role == Qt.ItemDataRole.DisplayRole and orientation == Qt.Horizontal:
-            return _DAY_HEADERS[section]
+        if orientation == Qt.Orientation.Horizontal:
+            if role == Qt.ItemDataRole.DisplayRole:
+                return _DAY_HEADERS[section]
+            if role == Qt.ItemDataRole.TextAlignmentRole:
+                if section in (
+                    COL_EMP_ID,
+                    COL_NAME,
+                    COL_AREA,
+                    COL_DEPT,
+                    COL_SHIFT_TIMING,
+                    COL_WEEKOFF,
+                ) or COL_DAY_FIRST <= section <= COL_DAY_LAST:
+                    return Qt.AlignmentFlag.AlignCenter
+                return Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft
         return None
 
     # ── Public API ────────────────────────────────────────────────────────────
@@ -160,7 +231,11 @@ class _WeekOffTableModel(QAbstractTableModel):
     def reload(self, employees: list[Employee], weekoffs: dict[str, str | None]) -> None:
         self.beginResetModel()
         self._employees = list(employees)
-        self._weekoffs  = dict(weekoffs)
+        wo = dict(weekoffs)
+        for e in self._employees:
+            if not _employee_weekly_off_assignable(e):
+                wo.pop(e.emp_id, None)
+        self._weekoffs = wo
         self.endResetModel()
 
     def employee_at(self, row: int) -> Employee | None:
@@ -170,13 +245,20 @@ class _WeekOffTableModel(QAbstractTableModel):
         return self._weekoffs.get(emp_id)
 
     def get_weekoffs(self) -> dict[str, str | None]:
-        return dict(self._weekoffs)
+        out = dict(self._weekoffs)
+        for e in self._employees:
+            if not _employee_weekly_off_assignable(e):
+                out.pop(e.emp_id, None)
+        return out
 
     def set_day_for_rows(self, rows: list[int], day: str | None) -> None:
         """Set a specific day (or None) for multiple source rows."""
         for row in rows:
             if 0 <= row < len(self._employees):
-                self._weekoffs[self._employees[row].emp_id] = day
+                emp = self._employees[row]
+                if not _employee_weekly_off_assignable(emp):
+                    continue
+                self._weekoffs[emp.emp_id] = day
         if rows:
             first = min(rows)
             last  = max(rows)
@@ -310,6 +392,20 @@ class _RadioDelegate(QStyledItemDelegate):
         from PySide6.QtWidgets import QStyle
         from PySide6.QtGui import QPen
 
+        emp = _employee_from_proxy_index(index)
+        if emp is not None and not _employee_weekly_off_assignable(emp):
+            painter.save()
+            painter.setRenderHint(painter.RenderHint.Antialiasing)
+            selected = bool(option.state & QStyle.StateFlag.State_Selected)
+            if selected:
+                painter.fillRect(option.rect, QColor("#EFF6FF"))
+            elif option.rect.top() // 46 % 2 == 1:
+                painter.fillRect(option.rect, QColor("#F8FAFC"))
+            else:
+                painter.fillRect(option.rect, QColor("#ffffff"))
+            painter.restore()
+            return
+
         checked = bool(index.data(Qt.ItemDataRole.DisplayRole))
 
         painter.save()
@@ -365,6 +461,10 @@ class _RadioDelegate(QStyledItemDelegate):
         if not (COL_DAY_FIRST <= col <= COL_DAY_LAST):
             return False
 
+        emp_here = _employee_from_proxy_index(index)
+        if emp_here is not None and not _employee_weekly_off_assignable(emp_here):
+            return False
+
         # Determine which source rows to update
         sel_proxy_rows = self._table.selectionModel().selectedRows()
         clicked_in_sel = any(r.row() == index.row() for r in sel_proxy_rows)
@@ -374,6 +474,14 @@ class _RadioDelegate(QStyledItemDelegate):
             day_name = DAYS[col - COL_DAY_FIRST]
             src_model = model.sourceModel()
             src_rows = [model.mapToSource(r).row() for r in sel_proxy_rows]
+            src_rows = [
+                r
+                for r in src_rows
+                if (e := src_model.employee_at(r)) is not None
+                and _employee_weekly_off_assignable(e)
+            ]
+            if not src_rows:
+                return True
             # If all already have this day → clear; otherwise set
             all_same = all(src_model.get_weekoff(src_model.employee_at(r).emp_id) == day_name
                            for r in src_rows if src_model.employee_at(r))
@@ -460,35 +568,46 @@ class WeekOffTab(QWidget):
         root.setContentsMargins(24, 20, 24, 20)
         root.setSpacing(16)
 
-        # ── Header ────────────────────────────────────────────────────────────
-        hdr = QHBoxLayout()
+        # ── Header (single row: title | Import | Refresh | Save) ───────────────
+        hdr_host = QWidget()
+        hdr = QHBoxLayout(hdr_host)
+        hdr.setSpacing(16)
+        hdr.setContentsMargins(0, 0, 0, 10)
+
         col = QVBoxLayout()
-        col.setSpacing(4)
-        title = QLabel("Weekly Off Management")
+        col.setSpacing(2)
+        title = QLabel("Employee management")
         title.setObjectName("sectionTitle")
         subtitle = QLabel(
             "Click a day cell to assign a weekly off. "
-            "Select multiple rows then click a day to bulk-assign."
+            "Select multiple rows then click a day to bulk-assign. "
+            "Security (no weekly off in rules) has no day selectors."
         )
         subtitle.setObjectName("sectionSubtitle")
         col.addWidget(title)
         col.addWidget(subtitle)
         hdr.addLayout(col, 1)
 
-        btn_row = QHBoxLayout()
-        btn_row.setSpacing(8)
+        self._imports_panel = ImportsPanel(self, embedded=True)
+        hdr.addWidget(self._imports_panel, 0, Qt.AlignmentFlag.AlignVCenter)
+
+        _btn_h = 36
         self._refresh_btn = QPushButton("Refresh")
         self._refresh_btn.setObjectName("secondaryButton")
-        self._refresh_btn.setFixedWidth(90)
+        self._refresh_btn.setFixedSize(90, _btn_h)
         self._refresh_btn.clicked.connect(self._fetch_data)
         self._save_btn = QPushButton("Save Changes")
         self._save_btn.setObjectName("primaryButton")
-        self._save_btn.setFixedWidth(130)
+        self._save_btn.setFixedSize(130, _btn_h)
         self._save_btn.clicked.connect(self._save_data)
+        wrap_btns = QWidget()
+        btn_row = QHBoxLayout(wrap_btns)
+        btn_row.setContentsMargins(0, 0, 0, 0)
+        btn_row.setSpacing(8)
         btn_row.addWidget(self._refresh_btn)
         btn_row.addWidget(self._save_btn)
-        hdr.addLayout(btn_row)
-        root.addLayout(hdr)
+        hdr.addWidget(wrap_btns, 0, Qt.AlignmentFlag.AlignVCenter)
+        root.addWidget(hdr_host)
 
         # ── Toolbar ───────────────────────────────────────────────────────────
         toolbar = QHBoxLayout()
@@ -496,7 +615,7 @@ class WeekOffTab(QWidget):
         self._search = QLineEdit()
         self._search.setObjectName("searchInput")
         self._search.setPlaceholderText(
-            "Search by name, ID, department, area, shift, shift timing…"
+            "Search by name, ID, department, area, shift details, shift time table…"
         )
         self._search.setFixedHeight(36)
         toolbar.addWidget(self._search, 1)
@@ -506,7 +625,7 @@ class WeekOffTab(QWidget):
         for label, combo_attr in (
             ("Area", "_area_filter"),
             ("Department", "_dept_filter"),
-            ("Shift", "_shift_filter"),
+            ("Shift details", "_shift_filter"),
         ):
             lab = QLabel(label)
             lab.setStyleSheet("color:#64748B; font-size:12px;")
@@ -564,21 +683,19 @@ class WeekOffTab(QWidget):
             self.table.setItemDelegateForColumn(col_idx, self._radio_delegate)
 
         hh = self.table.horizontalHeader()
-        # Fill remaining width so no empty (often black) strip appears right of the last column.
-        hh.setStretchLastSection(True)
-        hh.setSectionResizeMode(COL_EMP_ID,  QHeaderView.ResizeToContents)
-        hh.setSectionResizeMode(COL_NAME,    QHeaderView.ResizeToContents)
-        hh.setSectionResizeMode(COL_AREA,    QHeaderView.ResizeToContents)
-        hh.setSectionResizeMode(COL_DEPT,    QHeaderView.ResizeToContents)
-        hh.setSectionResizeMode(COL_SHIFT,         QHeaderView.ResizeToContents)
-        hh.setSectionResizeMode(COL_SHIFT_TIMING,  QHeaderView.ResizeToContents)
+        # Extra width goes to Name; day columns stay equal (no gap between Sat and Sun).
+        hh.setStretchLastSection(False)
+        hh.setSectionResizeMode(COL_EMP_ID, QHeaderView.ResizeToContents)
+        hh.setSectionResizeMode(COL_NAME, QHeaderView.Stretch)
+        hh.setSectionResizeMode(COL_AREA, QHeaderView.ResizeToContents)
+        hh.setSectionResizeMode(COL_DEPT, QHeaderView.ResizeToContents)
+        hh.setSectionResizeMode(COL_SHIFT, QHeaderView.ResizeToContents)
+        hh.setSectionResizeMode(COL_SHIFT_TIMING, QHeaderView.ResizeToContents)
         hh.setSectionResizeMode(COL_WEEKOFF, QHeaderView.Fixed)
         hh.resizeSection(COL_WEEKOFF, 100)
-        for col_idx in range(COL_DAY_FIRST, COL_DAY_LAST):
+        for col_idx in range(COL_DAY_FIRST, COL_DAY_LAST + 1):
             hh.setSectionResizeMode(col_idx, QHeaderView.Fixed)
             hh.resizeSection(col_idx, 52)
-        hh.setSectionResizeMode(COL_DAY_LAST, QHeaderView.Stretch)
-        hh.resizeSection(COL_DAY_LAST, 52)
 
         self.table.verticalHeader().setDefaultSectionSize(46)
 
@@ -618,7 +735,6 @@ class WeekOffTab(QWidget):
         self._rebuild_filter_combos()
         self._update_count()
         self._stack.setCurrentIndex(_PAGE_TABLE)
-        QTimer.singleShot(0, self._fit_name_column_width)
 
     def _on_fetch_error(self, message: str):
         self._refresh_btn.setEnabled(True)
@@ -644,10 +760,6 @@ class WeekOffTab(QWidget):
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 
-    def _fit_name_column_width(self) -> None:
-        """Size Name column to the widest full name so text is not truncated."""
-        self.table.resizeColumnToContents(COL_NAME)
-
     def _rebuild_filter_combos(self):
         areas = sorted({e.area for e in self._all_employees})
         depts = sorted({e.department for e in self._all_employees})
@@ -670,8 +782,9 @@ class WeekOffTab(QWidget):
         shown      = self._proxy.rowCount()
         total      = len(self._all_employees)
         weekoffs   = self._model.get_weekoffs()
-        assigned   = sum(1 for e in self._all_employees if weekoffs.get(e.emp_id))
-        unassigned = total - assigned
+        assignable = [e for e in self._all_employees if _employee_weekly_off_assignable(e)]
+        assigned   = sum(1 for e in assignable if weekoffs.get(e.emp_id))
+        unassigned = len(assignable) - assigned
         count      = f"Showing {shown} of {total}" if shown != total else str(total)
         self._count_label.setText(
             f"{count} employees  ·  Assigned: {assigned}  ·  Unassigned: {unassigned}"

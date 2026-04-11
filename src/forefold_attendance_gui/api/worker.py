@@ -59,6 +59,29 @@ class FetchWorker(QObject):
             self.failed.emit(f"Failed to load data: {exc}")
 
 
+class LoginAuthWorker(QObject):
+    """Authenticate only — for the login screen before opening the dashboard."""
+
+    finished = Signal()
+    failed = Signal(str)
+
+    def __init__(self, email: str, password: str, company: str = "auinfocity"):
+        super().__init__()
+        self._email = email
+        self._password = password
+        self._company = company
+
+    def run(self):
+        try:
+            client = ApiClient(self._email, self._password, self._company)
+            client.authenticate()
+            self.finished.emit()
+        except AuthError as exc:
+            self.failed.emit(str(exc))
+        except Exception as exc:
+            self.failed.emit(str(exc))
+
+
 def start_fetch(
     email: str,
     password: str,

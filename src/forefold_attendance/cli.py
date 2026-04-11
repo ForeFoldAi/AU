@@ -17,6 +17,11 @@ def main() -> int:
     parser.add_argument("--month", type=int, required=True)
     parser.add_argument("--year", type=int, required=True)
     parser.add_argument("--output", default=None)
+    parser.add_argument(
+        "--area",
+        default="",
+        help="Only include employees in this work area (matches BioTime area name; default: all)",
+    )
     args = parser.parse_args()
 
     cfg = {
@@ -27,6 +32,8 @@ def main() -> int:
         "month": args.month,
         "year": args.year,
     }
+    if (args.area or "").strip():
+        cfg["filter_area"] = args.area.strip()
 
     try:
         output, logs = generate_report(cfg, output=args.output)

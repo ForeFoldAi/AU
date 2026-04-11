@@ -30,7 +30,7 @@ _JSON_FILES = {
 def kind_label(kind: str) -> str:
     return {
         KIND_SHIFT_TIMES: "Shift master (Shift Name, Timetable, …)",
-        KIND_TIMETABLE: "Timetable (Name, Check In, Check Out, …)",
+        KIND_TIMETABLE: "Shift time table (Name, Check In, Check Out, …)",
         KIND_EMPLOYEE_SCHEDULE: "Employee scheduled shifts",
     }.get(kind, kind)
 

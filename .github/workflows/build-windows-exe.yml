@@ -24,6 +24,7 @@ on:
       - "src/**"
       - "requirements.txt"
       - "build_nuitka.bat"
+      - "installer.iss"
       - ".github/workflows/build-windows-exe.yml"
 
 permissions:
@@ -59,8 +60,9 @@ jobs:
             --enable-plugin=pyside6 `
             --include-qt-plugins=platforms,styles,imageformats `
             --include-module=attendance_report `
-            --windows-company-name="AUINFOCITY" `
-            --windows-product-name="Attendance Report" `
+            --include-data-files=src/public/forefold-logo.png=forefold-logo.png `
+            --windows-company-name="ForeFold AI" `
+            --windows-product-name="ForeFold Report Generator" `
             --windows-file-version=1.0.0.0 `
             --windows-product-version=1.0.0.0 `
             --output-dir=build `
@@ -94,11 +96,33 @@ jobs:
         run: |
           Compress-Archive -Path "build/AttendanceReport.dist/*" -DestinationPath "build/AttendanceReport-win64-portable.zip" -Force
 
+      - name: Install Inno Setup
+        run: choco install innosetup -y
+
+      - name: Build Windows installer (permanent per-user install)
+        shell: pwsh
+        run: |
+          $candidates = @(
+            "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
+            "$env:ProgramFiles\Inno Setup 6\ISCC.exe"
+          )
+          $iscc = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $iscc) { throw "ISCC.exe not found after installing Inno Setup." }
+          & $iscc installer.iss
+          $setup = "build/installer/ForeFoldReportGeneratorSetup.exe"
+          if (-not (Test-Path $setup)) { throw "Expected installer not found: $setup" }
+
       - name: Upload portable ZIP
         uses: actions/upload-artifact@v4
         with:
           name: AttendanceReport-Windows-Portable
           path: build/AttendanceReport-win64-portable.zip
+
+      - name: Upload Windows installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: ForeFoldReportGenerator-Windows-Setup
+          path: build/installer/ForeFoldReportGeneratorSetup.exe
 
       - name: Prepare release assets
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_release }}
@@ -110,13 +134,15 @@ jobs:
           }
           "RELEASE_TAG=$version" >> $env:GITHUB_ENV
           Copy-Item "build/AttendanceReport-win64-portable.zip" "build/AttendanceReport-$version-win64-portable.zip"
+          Copy-Item "build/installer/ForeFoldReportGeneratorSetup.exe" "build/ForeFoldReportGenerator-$version-Setup.exe"
 
       - name: Publish GitHub Release
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_release }}
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.RELEASE_TAG }}
-          name: Attendance Report ${{ env.RELEASE_TAG }}
+          name: ForeFold Report Generator ${{ env.RELEASE_TAG }}
           generate_release_notes: true
           files: |
             build/AttendanceReport-${{ env.RELEASE_TAG }}-win64-portable.zip
+            build/ForeFoldReportGenerator-${{ env.RELEASE_TAG }}-Setup.exe

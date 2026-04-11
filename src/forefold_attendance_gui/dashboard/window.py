@@ -17,7 +17,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from forefold_attendance_gui.dashboard.imports.tab import ImportsTab
+from forefold_attendance_gui.constants import PRODUCT_HEADER_BRAND, PRODUCT_WINDOW_TITLE
 from forefold_attendance_gui.dashboard.reports.tab import ReportsTab
 from forefold_attendance_gui.weekoff.tab import WeekOffTab
 
@@ -58,7 +58,7 @@ class DashboardWindow(QMainWindow):
         super().__init__()
         self.user_email    = email
         self.user_password = password
-        self.setWindowTitle("AU Infocity - Vendor Attendance & OT Report")
+        self.setWindowTitle(PRODUCT_WINDOW_TITLE)
         self.setMinimumSize(1100, 720)
         self.resize(1280, 800)
 
@@ -74,7 +74,7 @@ class DashboardWindow(QMainWindow):
         """Right-aligned credit beside the normal status message (e.g. Ready)."""
         foot = QLabel(
             '<a href="https://forefoldai.com" style="color:#64748B; text-decoration:none;">'
-            "Developed by ForeFold AI</a>"
+            "Powered by forefoldai.com</a>"
         )
         foot.setTextFormat(Qt.TextFormat.RichText)
         foot.setOpenExternalLinks(True)
@@ -93,17 +93,15 @@ class DashboardWindow(QMainWindow):
         # Build content pages first (nav buttons reference the stack)
         self._stack   = QStackedWidget()
         self._wo_tab  = WeekOffTab(self.user_email, self.user_password)
-        self._imp_tab = ImportsTab()
         self._rep_tab = ReportsTab(self.user_email, self.user_password, self._status)
         self._stack.addWidget(self._wo_tab)    # page 0
-        self._stack.addWidget(self._imp_tab)   # page 1
-        self._stack.addWidget(self._rep_tab)   # page 2
+        self._stack.addWidget(self._rep_tab)   # page 1
 
         outer.addWidget(self._make_header())
         outer.addWidget(self._stack, 1)
 
         self.setCentralWidget(root)
-        self._switch_page(0)  # Employee Weekly Off on launch
+        self._switch_page(0)  # Employee management on launch
 
     def _make_header(self) -> QWidget:
         bar = QWidget()
@@ -122,8 +120,8 @@ class DashboardWindow(QMainWindow):
         layout.setContentsMargins(24, 0, 16, 0)
         layout.setSpacing(0)
 
-        # ── Brand ─────────────────────────────────────────────────────────────
-        app_name = QLabel("AU Infocity")
+        # ── Brand (aligned with login screen) ────────────────────────────────
+        app_name = QLabel(PRODUCT_HEADER_BRAND)
         app_name.setObjectName("appName")
         layout.addWidget(app_name)
 
@@ -138,7 +136,7 @@ class DashboardWindow(QMainWindow):
         # ── Inline nav tab buttons — centred between brand and user info ────────
         layout.addStretch(1)
         self._nav_btns: list[QPushButton] = []
-        for i, label in enumerate(["Employee Weekly Off", "Imports", "Reports"]):
+        for i, label in enumerate(["Employee management", "Reports"]):
             btn = QPushButton(label)
             btn.setFixedHeight(60)
             btn.setCursor(Qt.PointingHandCursor)

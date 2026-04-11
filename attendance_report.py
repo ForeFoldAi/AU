@@ -13,6 +13,7 @@ from openpyxl.utils import get_column_letter
 from datetime import date, datetime, timedelta
 from pathlib import Path
 import calendar
+import re
 from collections import defaultdict
 import sys
 import argparse
@@ -28,6 +29,7 @@ CONFIG = {
     "month":        11,
     "year":         2025,
     "company_name": "AUINFOCITY",
+    "powered_by_line": "Powered by forefoldai.com",
     "site_name":    "CYBER TOWERS",
     "page_size":    100,
     "default_standard_hours": 8,
@@ -39,86 +41,74 @@ CONFIG = {
 #  Keys must exactly match department names returned by /personnel/api/departments/
 #  If a department name doesn't match, default rules are applied and a warning is printed.
 # ══════════════════════════════════════════════════════════════════════════════
+# MEP / O&M: General 09:00–18:00, A 07:00–14:00, B 14:00–21:00, C 21:00–07:00
+_MEP_ENGINE_RULES = {
+    "standard_hours":                 9,
+    "weekly_off_days":                [6],
+    "weekly_off_adjacent":            True,
+    "weekly_off_either_adjacent":     True,
+    "mep_shift_engine":               True,
+    "mep_general_sched_hours":        9.0,
+    "mep_general_ot_min_extra":       3.0,
+}
+
+# Security: General 09:00–18:00, A4 08:00–20:00, C4 20:00–08:00 — no weekly off / PH
+_SECURITY_ENGINE_RULES = {
+    "standard_hours":            8,
+    "weekly_off_days":           [],
+    "weekly_off_adjacent":       False,
+    "no_holidays":               True,
+    "security_shift_engine":     True,
+    "security_fixed_ot_hrs":     4.0,
+    "security_std_duty_hrs":     8.0,
+    "security_ot_min_session_hrs": 4.0,
+}
+
+# HK: General 08–17 / 09–18, A 06–15, B 12–21, C 21–06; W/O = either adjacent day duty
+_HK_ENGINE_RULES = {
+    "standard_hours":              9,
+    "weekly_off_days":             [6],
+    "weekly_off_adjacent":         True,
+    "weekly_off_either_adjacent":  True,
+    "hk_shift_engine":             True,
+    "hk_a_continuation_ot_hrs":    6.0,
+    "hk_bc_continuation_ot_hrs":   9.0,
+}
+
+# Landscape / Pest: General only 09:00–17:00 (8h); no OT; W/O = either adjacent day duty
+_LP_ENGINE_RULES = {
+    "standard_hours":              8,
+    "weekly_off_days":             [6],
+    "weekly_off_adjacent":         True,
+    "weekly_off_either_adjacent":  True,
+    "no_ot":                       True,
+    "lp_shift_engine":             True,
+}
+
 DEPT_RULES = {
 
-    # ── MEP ───────────────────────────────────────────────────────────────────
-    # Weekly off (Sunday) is valid only with presence on both Saturday and Monday.
-    # General shift: if extra hours >= 3 beyond standard → 1 OT day.
-    # ABC shifts: OT only when doing a double shift (total hours > 1.75x standard).
-    "MEP": {
-        "standard_hours":               8,
-        "weekly_off_days":              [6],    # Sunday
-        "weekly_off_adjacent":          True,
-        "double_shift_multiplier":      1.75,   # >14 hrs = double shift
-        "shifts": {
-            "General": {
-                "punch_in_hours":   (7, 11),    # 07:00–10:59 = general shift
-                "ot_min_extra_hrs": 3,          # need >=3 extra hrs for 1 OT day
-            },
-            "A": {"punch_in_hours": (5,  7)},   # 05:00–06:59
-            "B": {"punch_in_hours": (13, 16)},  # 13:00–15:59
-            "C": {"punch_in_hours": (20, 24)},  # 20:00–23:59
-        },
-    },
+    # ── MEP / O&M (same rules; punches classified into G / A / B / C)
+    "MEP": dict(_MEP_ENGINE_RULES),
+    "O&M": dict(_MEP_ENGINE_RULES),
+    "Operations & Maintenance": dict(_MEP_ENGINE_RULES),
 
     # ── Security ──────────────────────────────────────────────────────────────
-    # No weekly offs. No holidays. Pay only for days present.
-    # Every working day automatically earns 4 hrs of OT (= 1 OT day in report).
-    "Security": {
-        "standard_hours":       8,
-        "daily_fixed_ot_hrs":   4,
-        "weekly_off_days":      [],
-        "weekly_off_adjacent":  False,
-        "no_holidays":          True,
-    },
+    # G / A4 / C4 from punches; 4h fixed OT per A4 or C4 session only (not General).
+    # Designation containing "Driver" → General-classified punches become A4 (C4 unchanged).
+    "Security": dict(_SECURITY_ENGINE_RULES),
 
     # ── House Keeping ─────────────────────────────────────────────────────────
-    # Standard = 9 hrs. Weekly off with adjacent rule.
-    # General shift: NO OT.
-    # A shift: if double shift (>15 hrs) → 6 hrs OT = 1 OT day.
-    # B & C shift: if double shift (>18 hrs) → full-day OT = 1 OT day (no overlap).
-    "House Keeping": {
-        "standard_hours":      9,
-        "weekly_off_days":     [6],
-        "weekly_off_adjacent": True,
-        "shifts": {
-            "General": {
-                "punch_in_hours": (7, 11),
-                "no_ot":          True,
-            },
-            "A": {
-                "punch_in_hours":         (5, 7),
-                "double_shift_threshold": 15,
-                "double_shift_ot_hrs":    6,
-            },
-            "B": {
-                "punch_in_hours":         (13, 16),
-                "double_shift_threshold": 18,
-                "double_shift_ot_hrs":    9,
-            },
-            "C": {
-                "punch_in_hours":         (20, 24),
-                "double_shift_threshold": 18,
-                "double_shift_ot_hrs":    9,
-            },
-        },
-    },
+    # G/A/B/C from punches; no OT on General; A continuation +6h OT; B/C +9h (full day).
+    "House Keeping": dict(_HK_ENGINE_RULES),
 
-    # ── Landscape ─────────────────────────────────────────────────────────────
-    "Landscape": {
-        "standard_hours":      8,
-        "weekly_off_days":     [6],
-        "weekly_off_adjacent": True,
-        "no_ot":               True,
-    },
-
-    # ── Pest Control ──────────────────────────────────────────────────────────
-    "Pest Control": {
-        "standard_hours":      8,
-        "weekly_off_days":     [6],
-        "weekly_off_adjacent": True,
-        "no_ot":               True,
-    },
+    # ── Landscape / Pest Control ──────────────────────────────────────────────
+    "Landscape":    dict(_LP_ENGINE_RULES),
+    "Pest Control": dict(_LP_ENGINE_RULES),
+    # Common BioTime / template names → same rules (G only, no OT)
+    "Nursary":      dict(_LP_ENGINE_RULES),
+    "Nursery":      dict(_LP_ENGINE_RULES),
+    "Gardners":     dict(_LP_ENGINE_RULES),
+    "Gardeners":    dict(_LP_ENGINE_RULES),
 }
 
 # ── Attendance status codes ───────────────────────────────────────────────────
@@ -127,6 +117,192 @@ PARTIAL  = "PP"
 LEAVE    = "L"
 WEEK_OFF = "W/O"
 PUB_HOL  = "PH"
+
+
+def _classify_mep_shift(login: datetime) -> str:
+    """
+    Classify a clock-in time into MEP shift (scheduled blocks):
+    A 07:00–14:00, General 09:00–18:00, B 14:00–21:00, C 21:00–07:00.
+    """
+    m = login.hour * 60 + login.minute
+    if m < 7 * 60:
+        return "C"
+    if m < 9 * 60:
+        return "A"
+    if m < 14 * 60:
+        return "General"
+    if m < 21 * 60:
+        return "B"
+    return "C"
+
+
+def _mep_anchor_date(login: datetime, shift: str) -> date:
+    """Overnight C ending before 07:00 is attributed to the shift start (previous day)."""
+    if shift == "C" and login.hour < 7:
+        return login.date() - timedelta(days=1)
+    return login.date()
+
+
+def _mep_shift_letter(shift_name: str) -> str:
+    return "G" if shift_name == "General" else shift_name
+
+
+def _mep_day_code_and_ot(day_sessions: list, gen_hrs: float, min_extra: float) -> tuple[str, int, float]:
+    """
+    Build display code (G, A, AC, ABC, G+OT) and OT day count / hours for one calendar day.
+    """
+    day_sessions = sorted(day_sessions, key=lambda s: s["login"])
+    if not day_sessions:
+        return LEAVE, 0, 0.0
+
+    base_code = "".join(_mep_shift_letter(s["shift"]) for s in day_sessions)
+
+    if len(day_sessions) == 1:
+        s0 = day_sessions[0]
+        if s0["shift"] == "General":
+            extra = s0["hrs"] - gen_hrs
+            if extra >= min_extra:
+                return "G+OT", 1, round(extra, 2)
+            return "G", 0, 0.0
+        return base_code, 0, 0.0
+
+    od = len(day_sessions) - 1
+    ot_hrs = sum(s["hrs"] for s in day_sessions[1:])
+    return base_code, od, round(ot_hrs, 2)
+
+
+def _mep_status_worked_for_weekly_off(status) -> bool:
+    if status in (LEAVE, WEEK_OFF, "", None):
+        return False
+    if status == PUB_HOL:
+        return True
+    return True
+
+
+def _mep_status_counts_present_line(status) -> bool:
+    if status in (LEAVE, WEEK_OFF, "", None):
+        return False
+    return status != PUB_HOL
+
+
+def _mep_status_counts_man_day_row(status) -> bool:
+    if status in (LEAVE, WEEK_OFF, "", None):
+        return False
+    return True
+
+
+def _classify_security_shift(login: datetime) -> str:
+    """
+    Security clock-in → shift type:
+    General 09:00–18:00, A4 08:00–20:00, C4 20:00–08:00 (next day).
+    """
+    m = login.hour * 60 + login.minute
+    c4_evening_start = 19 * 60 + 30
+    if m >= c4_evening_start or m < 8 * 60:
+        return "C4"
+    if m < 9 * 60:
+        return "A4"
+    return "General"
+
+
+def _security_anchor_date(login: datetime, shift: str) -> date:
+    if shift == "C4" and login.hour < 8:
+        return login.date() - timedelta(days=1)
+    return login.date()
+
+
+def _security_display_token(shift_name: str) -> str:
+    return "G" if shift_name == "General" else shift_name
+
+
+def _designation_is_security_a4_driver(designation: str) -> bool:
+    """Position/title contains 'driver' (e.g. Driver, Van Driver) → Security A4 roster."""
+    return "driver" in (designation or "").strip().casefold()
+
+
+def _security_day_code_and_ot(
+    day_sessions: list,
+    fixed_ot: float,
+    min_session_hrs: float,
+) -> tuple[str, int, float]:
+    """Build G / A4 / C4 / A4C4 and OT (4h per qualifying A4 or C4 session only)."""
+    day_sessions = sorted(day_sessions, key=lambda s: s["login"])
+    if not day_sessions:
+        return LEAVE, 0, 0.0
+
+    base_code = "".join(_security_display_token(s["shift"]) for s in day_sessions)
+
+    ot_sessions = [
+        s
+        for s in day_sessions
+        if s["shift"] in ("A4", "C4") and s["hrs"] >= min_session_hrs
+    ]
+    if not ot_sessions:
+        return base_code, 0, 0.0
+
+    od = len(ot_sessions)
+    oh = round(fixed_ot * od, 2)
+    return base_code, od, oh
+
+
+def _classify_hk_shift(login: datetime) -> str:
+    """
+    House Keeping clock-in:
+    C 21:00–06:00, B 12:00–21:00, A 06:00–08:00, General 08:00–12:00 (08–17 / 09–18 starts).
+    """
+    m = login.hour * 60 + login.minute
+    if m >= 21 * 60 or m < 6 * 60:
+        return "C"
+    if 12 * 60 <= m < 21 * 60:
+        return "B"
+    if 6 * 60 <= m < 8 * 60:
+        return "A"
+    if 8 * 60 <= m < 12 * 60:
+        return "General"
+    return "General"
+
+
+def _hk_anchor_date(login: datetime, shift: str) -> date:
+    if shift == "C" and login.hour < 6:
+        return login.date() - timedelta(days=1)
+    return login.date()
+
+
+def _hk_display_token(shift_name: str) -> str:
+    return "G" if shift_name == "General" else shift_name
+
+
+def _hk_day_code_and_ot(
+    day_sessions: list,
+    a_ot: float,
+    bc_ot: float,
+) -> tuple[str, int, float]:
+    """
+    Codes: G, A, B, C, BC, … No OT on General; A in continuation → +a_ot hrs;
+    B/C continuation (no General in pair) → +bc_ot full-day hours per step.
+    """
+    day_sessions = sorted(day_sessions, key=lambda s: s["login"])
+    if not day_sessions:
+        return LEAVE, 0, 0.0
+
+    base_code = "".join(_hk_display_token(s["shift"]) for s in day_sessions)
+
+    od = 0
+    oh = 0.0
+    for i in range(1, len(day_sessions)):
+        prev = day_sessions[i - 1]["shift"]
+        curr = day_sessions[i]["shift"]
+        if prev == "General" or curr == "General":
+            continue
+        if prev == "A" or curr == "A":
+            od += 1
+            oh += a_ot
+        elif prev in ("B", "C") or curr in ("B", "C"):
+            od += 1
+            oh += bc_ot
+
+    return base_code, od, round(oh, 2)
+
 
 # ── Colour palette ────────────────────────────────────────────────────────────
 C = {
@@ -147,6 +323,19 @@ C = {
     "white":      "FFFFFF",
     "black":      "000000",
 }
+
+
+def _report_cell_bg_shift_code(code, od: int, fill_map: dict) -> str | None:
+    """MEP / Security / HK letter codes (G, BC, A4C4, …) + OT highlighting."""
+    if code in fill_map:
+        base = fill_map[code]
+    elif code and code not in (LEAVE, WEEK_OFF):
+        base = C["present"]
+    else:
+        base = None
+    if od and code not in (LEAVE, WEEK_OFF, "", None):
+        return C["ot_day"]
+    return base
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -257,13 +446,14 @@ class ShiftDetector:
 # ══════════════════════════════════════════════════════════════════════════════
 class AttendanceCalculator:
 
-    def __init__(self, dept_name: str, rule: dict):
-        self.dept     = dept_name
-        self.rule     = rule
-        self.std_hrs  = rule.get("standard_hours", 8)
-        self.off_days = set(rule.get("weekly_off_days", [6]))
-        self.no_ot    = rule.get("no_ot", False)
-        self.detector = ShiftDetector(rule.get("shifts", {}))
+    def __init__(self, dept_name: str, rule: dict, designation: str = ""):
+        self.dept         = dept_name
+        self.rule         = rule
+        self.designation  = designation or ""
+        self.std_hrs      = rule.get("standard_hours", 8)
+        self.off_days     = set(rule.get("weekly_off_days", [6]))
+        self.no_ot        = rule.get("no_ot", False)
+        self.detector     = ShiftDetector(rule.get("shifts", {}))
 
     @staticmethod
     def _parse(s: str):
@@ -286,8 +476,8 @@ class AttendanceCalculator:
         work_hrs = (punches[-1] - punches[0]).total_seconds() / 3600
         extra    = max(0.0, work_hrs - self.std_hrs)
 
-        # ── SECURITY: fixed 4 hrs OT every day they're present ───────────
-        if self.dept == "Security":
+        # ── SECURITY (legacy path only if security_shift_engine is off) ──
+        if self.dept == "Security" and not self.rule.get("security_shift_engine"):
             fixed = self.rule.get("daily_fixed_ot_hrs", 4)
             return (1, float(fixed)) if work_hrs >= self.std_hrs else (0, 0.0)
 
@@ -298,20 +488,8 @@ class AttendanceCalculator:
         shifts_cfg = self.rule.get("shifts", {})
         shift_cfg  = shifts_cfg.get(shift, {})
 
-        # ── MEP general shift ─────────────────────────────────────────────
-        if self.dept == "MEP":
-            if shift in ("A", "B", "C"):
-                # ABC: OT only on double shift
-                mult = self.rule.get("double_shift_multiplier", 1.75)
-                if work_hrs >= self.std_hrs * mult:
-                    return 1, round(extra, 2)
-                return 0, 0.0
-            else:   # General
-                min_extra = shift_cfg.get("ot_min_extra_hrs", 3)
-                return (1, round(extra, 2)) if extra >= min_extra else (0, 0.0)
-
-        # ── House Keeping per-shift ───────────────────────────────────────
-        if self.dept == "House Keeping":
+        # ── House Keeping (legacy only without hk_shift_engine) ──────────
+        if self.dept == "House Keeping" and not self.rule.get("hk_shift_engine"):
             if shift_cfg.get("no_ot"):
                 return 0, 0.0
             threshold = shift_cfg.get("double_shift_threshold", 0)
@@ -326,28 +504,261 @@ class AttendanceCalculator:
     # ── Weekly-off adjacency rule ─────────────────────────────────────────────
     def _adjacent_rule(self, attendance: dict) -> dict:
         """
-        W/O is valid only if the employee is present (P or PP) on both the
-        calendar day before and the calendar day after the weekly off.
+        Weekly-off validation against adjacent calendar days.
 
-        Scenarios (P = present, A = absent / not present):
-        P–W/O–P → valid W/O; any other pattern → converted to L.
-
-        Previous/next days use the same attendance map (month slice); missing
-        keys at month boundaries mean that side is not present → invalid W/O.
+        Default: duty required on **both** previous and next day.
+        MEP / O&M / House Keeping / Landscape / Pest (shift engine + either flag): OR adjacent day.
         """
-        worked = {PRESENT, PARTIAL}
+        mep = self.rule.get("mep_shift_engine")
+        hk = self.rule.get("hk_shift_engine")
+        lp = self.rule.get("lp_shift_engine")
+        either = self.rule.get("weekly_off_either_adjacent")
+
+        def _worked(st) -> bool:
+            if mep or hk or lp:
+                return _mep_status_worked_for_weekly_off(st)
+            return st in (PRESENT, PARTIAL)
+
         revised = dict(attendance)
         for d, status in attendance.items():
             if status != WEEK_OFF:
                 continue
-            prev_ok = attendance.get(d - timedelta(days=1)) in worked
-            next_ok = attendance.get(d + timedelta(days=1)) in worked
-            if not (prev_ok and next_ok):
-                revised[d] = LEAVE
+            prev_ok = _worked(attendance.get(d - timedelta(days=1)))
+            next_ok = _worked(attendance.get(d + timedelta(days=1)))
+            if either:
+                if not (prev_ok or next_ok):
+                    revised[d] = LEAVE
+            else:
+                if not (prev_ok and next_ok):
+                    revised[d] = LEAVE
         return revised
+
+    def _compute_mep(self, txns: list, month: int, year: int):
+        """Pair punches into sessions, classify shifts, merge by anchor day."""
+        gen_hrs = float(self.rule.get("mep_general_sched_hours", 9.0))
+        min_extra = float(self.rule.get("mep_general_ot_min_extra", 3.0))
+
+        pts = sorted(
+            x for x in (self._parse(t.get("punch_time", "")) for t in txns) if x
+        )
+        num_days = calendar.monthrange(year, month)[1]
+        month_start = date(year, month, 1)
+        month_end = date(year, month, num_days)
+
+        sessions: list[dict] = []
+        for i in range(0, len(pts) - 1, 2):
+            a, b = pts[i], pts[i + 1]
+            if b <= a:
+                continue
+            sh = _classify_mep_shift(a)
+            ad = _mep_anchor_date(a, sh)
+            sessions.append(
+                {
+                    "login": a,
+                    "logout": b,
+                    "hrs": (b - a).total_seconds() / 3600.0,
+                    "shift": sh,
+                    "anchor": ad,
+                }
+            )
+
+        by_anchor: dict = defaultdict(list)
+        for s in sessions:
+            if month_start <= s["anchor"] <= month_end:
+                by_anchor[s["anchor"]].append(s)
+
+        attendance: dict = {}
+        ot_days: dict = {}
+        ot_hours: dict = {}
+
+        for day in range(1, num_days + 1):
+            d = date(year, month, day)
+            is_wo = d.weekday() in self.off_days
+            day_sess = by_anchor.get(d, [])
+            if day_sess:
+                code, od, oh = _mep_day_code_and_ot(day_sess, gen_hrs, min_extra)
+                attendance[d], ot_days[d], ot_hours[d] = code, od, oh
+            elif is_wo:
+                attendance[d], ot_days[d], ot_hours[d] = WEEK_OFF, 0, 0.0
+            else:
+                attendance[d], ot_days[d], ot_hours[d] = LEAVE, 0, 0.0
+
+        if self.rule.get("weekly_off_adjacent"):
+            attendance = self._adjacent_rule(attendance)
+
+        return attendance, ot_days, ot_hours
+
+    def _compute_security(self, txns: list, month: int, year: int):
+        """Pair punches, classify G / A4 / C4, fixed 4h OT per A4/C4 session only."""
+        fixed_ot = float(self.rule.get("security_fixed_ot_hrs", 4.0))
+        min_sess = float(self.rule.get("security_ot_min_session_hrs", 4.0))
+
+        pts = sorted(
+            x for x in (self._parse(t.get("punch_time", "")) for t in txns) if x
+        )
+        num_days = calendar.monthrange(year, month)[1]
+        month_start = date(year, month, 1)
+        month_end = date(year, month, num_days)
+
+        sessions: list[dict] = []
+        for i in range(0, len(pts) - 1, 2):
+            a, b = pts[i], pts[i + 1]
+            if b <= a:
+                continue
+            sh = _classify_security_shift(a)
+            if _designation_is_security_a4_driver(self.designation) and sh == "General":
+                sh = "A4"
+            ad = _security_anchor_date(a, sh)
+            sessions.append(
+                {
+                    "login": a,
+                    "logout": b,
+                    "hrs": (b - a).total_seconds() / 3600.0,
+                    "shift": sh,
+                    "anchor": ad,
+                }
+            )
+
+        by_anchor: dict = defaultdict(list)
+        for s in sessions:
+            if month_start <= s["anchor"] <= month_end:
+                by_anchor[s["anchor"]].append(s)
+
+        attendance: dict = {}
+        ot_days: dict = {}
+        ot_hours: dict = {}
+
+        for day in range(1, num_days + 1):
+            d = date(year, month, day)
+            is_wo = d.weekday() in self.off_days
+            day_sess = by_anchor.get(d, [])
+            if day_sess:
+                code, od, oh = _security_day_code_and_ot(day_sess, fixed_ot, min_sess)
+                attendance[d], ot_days[d], ot_hours[d] = code, od, oh
+            elif is_wo:
+                attendance[d], ot_days[d], ot_hours[d] = WEEK_OFF, 0, 0.0
+            else:
+                attendance[d], ot_days[d], ot_hours[d] = LEAVE, 0, 0.0
+
+        if self.rule.get("weekly_off_adjacent"):
+            attendance = self._adjacent_rule(attendance)
+
+        return attendance, ot_days, ot_hours
+
+    def _compute_hk(self, txns: list, month: int, year: int):
+        """House Keeping: pair punches, G/A/B/C, continuation OT (no OT on General)."""
+        a_ot = float(self.rule.get("hk_a_continuation_ot_hrs", 6.0))
+        bc_ot = float(self.rule.get("hk_bc_continuation_ot_hrs", 9.0))
+
+        pts = sorted(
+            x for x in (self._parse(t.get("punch_time", "")) for t in txns) if x
+        )
+        num_days = calendar.monthrange(year, month)[1]
+        month_start = date(year, month, 1)
+        month_end = date(year, month, num_days)
+
+        sessions: list[dict] = []
+        for i in range(0, len(pts) - 1, 2):
+            a, b = pts[i], pts[i + 1]
+            if b <= a:
+                continue
+            sh = _classify_hk_shift(a)
+            ad = _hk_anchor_date(a, sh)
+            sessions.append(
+                {
+                    "login": a,
+                    "logout": b,
+                    "hrs": (b - a).total_seconds() / 3600.0,
+                    "shift": sh,
+                    "anchor": ad,
+                }
+            )
+
+        by_anchor: dict = defaultdict(list)
+        for s in sessions:
+            if month_start <= s["anchor"] <= month_end:
+                by_anchor[s["anchor"]].append(s)
+
+        attendance: dict = {}
+        ot_days: dict = {}
+        ot_hours: dict = {}
+
+        for day in range(1, num_days + 1):
+            d = date(year, month, day)
+            is_wo = d.weekday() in self.off_days
+            day_sess = by_anchor.get(d, [])
+            if day_sess:
+                code, od, oh = _hk_day_code_and_ot(day_sess, a_ot, bc_ot)
+                attendance[d], ot_days[d], ot_hours[d] = code, od, oh
+            elif is_wo:
+                attendance[d], ot_days[d], ot_hours[d] = WEEK_OFF, 0, 0.0
+            else:
+                attendance[d], ot_days[d], ot_hours[d] = LEAVE, 0, 0.0
+
+        if self.rule.get("weekly_off_adjacent"):
+            attendance = self._adjacent_rule(attendance)
+
+        return attendance, ot_days, ot_hours
+
+    def _compute_lp(self, txns: list, month: int, year: int):
+        """Landscape / Pest Control: single General shift (09:00–17:00); always G, no OT."""
+        pts = sorted(
+            x for x in (self._parse(t.get("punch_time", "")) for t in txns) if x
+        )
+        num_days = calendar.monthrange(year, month)[1]
+        month_start = date(year, month, 1)
+        month_end = date(year, month, num_days)
+
+        sessions: list[dict] = []
+        for i in range(0, len(pts) - 1, 2):
+            a, b = pts[i], pts[i + 1]
+            if b <= a:
+                continue
+            sessions.append(
+                {
+                    "login": a,
+                    "logout": b,
+                    "hrs": (b - a).total_seconds() / 3600.0,
+                    "shift": "General",
+                    "anchor": a.date(),
+                }
+            )
+
+        by_anchor: dict = defaultdict(list)
+        for s in sessions:
+            if month_start <= s["anchor"] <= month_end:
+                by_anchor[s["anchor"]].append(s)
+
+        attendance: dict = {}
+        ot_days: dict = {}
+        ot_hours: dict = {}
+
+        for day in range(1, num_days + 1):
+            d = date(year, month, day)
+            is_wo = d.weekday() in self.off_days
+            if by_anchor.get(d):
+                attendance[d], ot_days[d], ot_hours[d] = "G", 0, 0.0
+            elif is_wo:
+                attendance[d], ot_days[d], ot_hours[d] = WEEK_OFF, 0, 0.0
+            else:
+                attendance[d], ot_days[d], ot_hours[d] = LEAVE, 0, 0.0
+
+        if self.rule.get("weekly_off_adjacent"):
+            attendance = self._adjacent_rule(attendance)
+
+        return attendance, ot_days, ot_hours
 
     # ── Main compute ──────────────────────────────────────────────────────────
     def compute(self, txns: list, month: int, year: int):
+        if self.rule.get("mep_shift_engine"):
+            return self._compute_mep(txns, month, year)
+        if self.rule.get("security_shift_engine"):
+            return self._compute_security(txns, month, year)
+        if self.rule.get("hk_shift_engine"):
+            return self._compute_hk(txns, month, year)
+        if self.rule.get("lp_shift_engine"):
+            return self._compute_lp(txns, month, year)
+
         by_date: dict = defaultdict(list)
         for t in txns:
             pt = self._parse(t.get("punch_time", ""))
@@ -384,11 +795,34 @@ class AttendanceCalculator:
 
     # ── Summarize ─────────────────────────────────────────────────────────────
     def summarize(self, attendance: dict, ot_days: dict, ot_hours: dict) -> dict:
+        if (
+            self.rule.get("mep_shift_engine")
+            or self.rule.get("security_shift_engine")
+            or self.rule.get("hk_shift_engine")
+            or self.rule.get("lp_shift_engine")
+        ):
+            present = sum(
+                1 for v in attendance.values() if _mep_status_counts_present_line(v)
+            )
+            pp = 0
+            wo = sum(1 for v in attendance.values() if v == WEEK_OFF)
+            ph = sum(1 for v in attendance.values() if v == PUB_HOL)
+            total_ot = sum(ot_days.values())
+            return {
+                "present":        present,
+                "wo":             wo,
+                "ot":             total_ot,
+                "ph":             ph,
+                "pp":             pp,
+                "total_present":  present + wo + ph,
+                "total_man_days": present + pp + total_ot,
+            }
+
         cnt = lambda code: sum(1 for v in attendance.values() if v == code)
-        present  = cnt(PRESENT)
-        pp       = cnt(PARTIAL)
-        wo       = cnt(WEEK_OFF)
-        ph       = cnt(PUB_HOL)
+        present = cnt(PRESENT)
+        pp = cnt(PARTIAL)
+        wo = cnt(WEEK_OFF)
+        ph = cnt(PUB_HOL)
         total_ot = sum(ot_days.values())
         return {
             "present":        present,
@@ -399,6 +833,45 @@ class AttendanceCalculator:
             "total_present":  present + wo + ph,
             "total_man_days": present + pp + total_ot,
         }
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  DEPARTMENT → EXCEL SHEET TITLE (BioTime names may differ from rule keys)
+# ══════════════════════════════════════════════════════════════════════════════
+def sheet_base_name_for_department(dept_name: str) -> str:
+    """
+    Map API department label to the Excel worksheet name (the tab at the bottom
+    of the workbook) and to the subtitle row inside that sheet.
+    O&M-style names → MEP; landscape / gardening → Nursary (template spelling).
+    """
+    raw = (dept_name or "").strip()
+    if not raw:
+        return "Department"
+    cf = raw.casefold()
+    compact_amp = cf.replace(" ", "")
+
+    if (
+        re.search(r"\bo\s*&\s*m\b", cf)
+        or re.search(r"\bo\s+and\s+m\b", cf)
+        or "o&m" in compact_amp
+        or ("operations" in cf and "maintenance" in cf)
+    ):
+        return "MEP"
+
+    if any(
+        k in cf
+        for k in (
+            "landscape",
+            "nursary",
+            "nursery",
+            "gardener",
+            "gardening",
+            "garden maintenance",
+        )
+    ):
+        return "Nursary"
+
+    return raw
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -440,65 +913,263 @@ class ReportGenerator:
         ws.merge_cells(start_row=r1, start_column=c1, end_row=r2, end_column=c2)
         return self._c(ws, r1, c1, val, bold, sz, fg, bg, ha, wrap)
 
-    def generate(self, emp_rows: list, output: str):
-        FIXED = 4
-        SUMM  = 6
-        TOTAL = FIXED + self.num_days + SUMM
+    @staticmethod
+    def _excel_sheet_title(raw: str, used: set[str]) -> str:
+        """Excel sheet name: max 31 chars, no []:*?/\\"""
+        t = "".join("_" if c in "[]:*?/\\" else c for c in (raw or "").strip()) or "Department"
+        if len(t) > 31:
+            t = t[:31]
+        base = t
+        n = 1
+        while t in used:
+            suffix = f" ({n})"
+            t = (base[: max(0, 31 - len(suffix))] + suffix).strip() or f"Dept_{n}"
+            n += 1
+        used.add(t)
+        return t
 
-        wb = openpyxl.Workbook()
-        ws = wb.active
-        ws.title = f"{self.mo_name[:3]}{self.year}"
+    def _apply_sheet_layout(self, ws, dept_name: str, total_cols: int, fixed: int):
+        """Header rows, column widths, freeze panes (one department per sheet)."""
         ws.freeze_panes = "E5"
-
-        # Column widths
         ws.column_dimensions["A"].width = 4
         ws.column_dimensions["B"].width = 22
         ws.column_dimensions["C"].width = 15
         ws.column_dimensions["D"].width = 5
         for i in range(self.num_days):
-            ws.column_dimensions[get_column_letter(FIXED + 1 + i)].width = 3.8
+            ws.column_dimensions[get_column_letter(fixed + 1 + i)].width = 3.8
         for i, w in enumerate([7, 4, 5, 4, 8, 10]):
-            ws.column_dimensions[get_column_letter(FIXED + self.num_days + 1 + i)].width = w
+            ws.column_dimensions[get_column_letter(fixed + self.num_days + 1 + i)].width = w
         for r in [1, 2, 3, 4]:
             ws.row_dimensions[r].height = {1: 24, 2: 18, 3: 16, 4: 14}[r]
 
-        # Row 1 — Company title
-        self._mc(ws, 1, 1, 1, TOTAL, self.cfg["company_name"],
-                 bold=True, sz=14, fg=C["white"], bg=C["dark_blue"])
-
-        # Row 2 — Subtitle
-        self._mc(ws, 2, 1, 2, TOTAL,
-                 f"{self.cfg['site_name']}  —  "
+        company = str(self.cfg.get("company_name") or "")
+        powered = str(self.cfg.get("powered_by_line") or "Powered by forefoldai.com")
+        if total_cols <= 1:
+            self._mc(
+                ws, 1, 1, 1, total_cols, company,
+                bold=True, sz=14, fg=C["white"], bg=C["dark_blue"], ha="left",
+            )
+        else:
+            mid = total_cols // 2
+            self._mc(
+                ws, 1, 1, 1, mid, company,
+                bold=True, sz=14, fg=C["white"], bg=C["dark_blue"], ha="left",
+            )
+            self._mc(
+                ws, 1, mid + 1, 1, total_cols, powered,
+                bold=True, sz=11, fg=C["white"], bg=C["dark_blue"], ha="right",
+            )
+        self._mc(ws, 2, 1, 2, total_cols,
+                 f"{self.cfg['site_name']}  —  {dept_name}  —  "
                  f"ATTENDANCE FOR THE MONTH OF {self.mo_name} {self.year}",
                  bold=True, sz=10, fg=C["white"], bg=C["med_blue"])
 
-        # Rows 3–4 — Fixed column headers
         for col, hdr in enumerate(["S.No", "Employee Name", "Designation", "W/D"], 1):
             self._mc(ws, 3, col, 4, col, hdr,
                      bold=True, sz=8, fg=C["white"], bg=C["dark_blue"], wrap=True)
 
         for i in range(self.num_days):
-            d   = date(self.year, self.month, i + 1)
-            col = FIXED + 1 + i
-            hc  = C["dark_blue"]
+            d = date(self.year, self.month, i + 1)
+            col = fixed + 1 + i
+            hc = C["dark_blue"]
             self._c(ws, 3, col, i + 1, bold=True, sz=8, fg=C["white"], bg=hc)
             self._c(ws, 4, col, self.DAY_ABBR[d.weekday()],
                     bold=True, sz=7, fg=C["white"], bg=hc)
 
         for i, lbl in enumerate(
                 ["Present", "W/O", "OT", "PH", "Total\nPresent", "Total Man\ndays"]):
-            self._mc(ws, 3, FIXED + self.num_days + 1 + i,
-                     4, FIXED + self.num_days + 1 + i,
+            self._mc(ws, 3, fixed + self.num_days + 1 + i,
+                     4, fixed + self.num_days + 1 + i,
                      lbl, bold=True, sz=8, fg=C["white"], bg=C["dark_blue"], wrap=True)
 
-        # Re-apply weekly-off validation and summaries so Excel reflects the rule at
-        # report time (same logic as AttendanceCalculator.compute), not only upstream.
-        # Reload user weekoffs so W/D matches ~/.forefold/weekoffs.json at export time.
+    @staticmethod
+    def _sort_rows_by_designation_then_name(rows: list) -> list:
+        """Ascending A–Z by designation; blank designation last; then by name."""
+
+        def key(e):
+            des = str(e.get("designation") or "").strip()
+            name = str(e.get("name") or "").strip()
+            return (0 if des else 1, des.casefold(), name.casefold())
+
+        return sorted(rows, key=key)
+
+    def _write_employee_block(self, ws, dept_rows: list, fixed: int, total_cols: int) -> int:
+        """Write designation band rows + employee rows; returns next row after last employee."""
+        fill_map = {PRESENT: C["present"], WEEK_OFF: C["weekoff"],
+                    LEAVE: C["leave"], PARTIAL: C["partial"], PUB_HOL: C["pubhol"]}
+        rule0 = _get_rule(dept_rows[0]["dept"]) if dept_rows else {}
+        uses_shift_codes = bool(
+            rule0.get("mep_shift_engine")
+            or rule0.get("security_shift_engine")
+            or rule0.get("hk_shift_engine")
+            or rule0.get("lp_shift_engine")
+        )
+        lp_g_only = bool(rule0.get("lp_shift_engine"))
+        ordered = self._sort_rows_by_designation_then_name(dept_rows)
+        current_row = 5
+        sno = 1
+        prev_group: object | str = object()
+
+        for emp in ordered:
+            des = str(emp.get("designation") or "").strip()
+            group_label = des if des else "—"
+            if group_label != prev_group:
+                rband = current_row
+                ws.row_dimensions[rband].height = 13
+                self._mc(
+                    ws, rband, 1, rband, total_cols,
+                    f"  {group_label}",
+                    bold=True, sz=8, fg=C["white"], bg=C["dept_hdr"], ha="left",
+                )
+                current_row += 1
+                prev_group = group_label
+
+            r = current_row
+            r2 = current_row + 1
+            ws.row_dimensions[r].height = 14
+            ws.row_dimensions[r2].height = 11
+
+            self._mc(ws, r, 1, r2, 1, sno, sz=8)
+            self._mc(ws, r, 2, r2, 2, emp["name"], sz=8, ha="left")
+            self._mc(ws, r, 3, r2, 3, emp.get("designation", ""), sz=7, ha="left")
+            self._mc(ws, r, 4, r2, 4, emp.get("wo_label") or "—", sz=7)
+
+            for i in range(self.num_days):
+                col = fixed + 1 + i
+                d = date(self.year, self.month, i + 1)
+                code = emp["attendance"].get(d, "")
+                od = emp["ot_days"].get(d, 0)
+                if lp_g_only:
+                    if code not in (LEAVE, WEEK_OFF, PUB_HOL, "", None):
+                        code = "G"
+                    od = 0
+                    bg = fill_map.get(code, C["present"])
+                elif uses_shift_codes:
+                    bg = _report_cell_bg_shift_code(code, od, fill_map)
+                else:
+                    bg = C["ot_day"] if (od and code == PRESENT) else fill_map.get(code)
+                self._c(ws, r, col, code, sz=7, bg=bg)
+
+            for i in range(self.num_days):
+                col = fixed + 1 + i
+                oh = emp["ot_hours"].get(date(self.year, self.month, i + 1), 0.0)
+                if lp_g_only:
+                    self._c(ws, r2, col, "", sz=7, bg=C["ot_row_bg"])
+                elif oh:
+                    self._c(ws, r2, col, round(oh, 1), sz=7, fg=C["black"], bg=C["ot_day"])
+                else:
+                    self._c(ws, r2, col, "", sz=7, bg=C["ot_row_bg"])
+
+            summ = dict(emp["summary"])
+            if lp_g_only:
+                summ["ot"] = 0
+                summ["total_man_days"] = summ["present"] + summ["pp"]
+            keys = ["present", "wo", "ot", "ph", "total_present", "total_man_days"]
+            for i, key in enumerate(keys):
+                self._c(ws, r, fixed + self.num_days + 1 + i,
+                        summ[key], bold=True, sz=8, bg=C["total_bg"])
+
+            total_ot_hrs = 0.0 if lp_g_only else round(sum(emp["ot_hours"].values()), 1)
+            for i, key in enumerate(keys):
+                if key == "ot":
+                    self._c(ws, r2, fixed + self.num_days + 1 + i,
+                            total_ot_hrs if total_ot_hrs else "",
+                            bold=True, sz=7,
+                            bg=C["ot_day"] if total_ot_hrs else C["ot_row_bg"])
+                else:
+                    self._c(ws, r2, fixed + self.num_days + 1 + i,
+                            "", sz=7, bg=C["ot_row_bg"])
+
+            current_row += 2
+            sno += 1
+        return current_row
+
+    def _write_dept_summary_rows(self, ws, dept_rows: list, start_row: int, fixed: int) -> int:
+        """Daily and column totals for employees on this sheet only."""
+        summ_keys = ["present", "wo", "ot", "ph", "total_present", "total_man_days"]
+        summ_labels = ["Present", "W/O", "OT", "PH", "Total Present", "Total Man days"]
+        current_row = start_row
+        rule0 = _get_rule(dept_rows[0]["dept"]) if dept_rows else {}
+        uses_shift_codes = bool(
+            rule0.get("mep_shift_engine")
+            or rule0.get("security_shift_engine")
+            or rule0.get("hk_shift_engine")
+            or rule0.get("lp_shift_engine")
+        )
+
+        for label, key in zip(summ_labels, summ_keys):
+            r = current_row
+            ws.row_dimensions[r].height = 13
+            self._mc(ws, r, 1, r, fixed, label,
+                     bold=True, sz=8, bg=C["summ_bg"], ha="right")
+
+            for i in range(self.num_days):
+                d = date(self.year, self.month, i + 1)
+                if key == "present":
+                    if uses_shift_codes:
+                        val = sum(
+                            1 for e in dept_rows
+                            if _mep_status_counts_present_line(e["attendance"].get(d))
+                        )
+                    else:
+                        val = sum(1 for e in dept_rows if e["attendance"].get(d) == PRESENT)
+                elif key == "wo":
+                    val = sum(1 for e in dept_rows if e["attendance"].get(d) == WEEK_OFF)
+                elif key == "ot":
+                    val = sum(e["ot_days"].get(d, 0) for e in dept_rows)
+                elif key == "ph":
+                    val = sum(1 for e in dept_rows if e["attendance"].get(d) == PUB_HOL)
+                elif key == "total_present":
+                    if uses_shift_codes:
+                        val = sum(
+                            1 for e in dept_rows
+                            if _mep_status_counts_present_line(e["attendance"].get(d))
+                            or e["attendance"].get(d) == WEEK_OFF
+                            or e["attendance"].get(d) == PUB_HOL
+                        )
+                    else:
+                        val = sum(
+                            1 for e in dept_rows
+                            if e["attendance"].get(d) in (PRESENT, WEEK_OFF, PUB_HOL)
+                        )
+                else:
+                    if uses_shift_codes:
+                        val = sum(
+                            1 for e in dept_rows
+                            if _mep_status_counts_man_day_row(e["attendance"].get(d))
+                        )
+                    else:
+                        val = sum(
+                            1 for e in dept_rows
+                            if e["attendance"].get(d) in (PRESENT, PARTIAL)
+                        )
+                self._c(ws, r, fixed + 1 + i,
+                        val if val else "", bold=True, sz=7, bg=C["summ_bg"])
+
+            for i, k in enumerate(summ_keys):
+                col2 = fixed + self.num_days + 1 + i
+                if k == key:
+                    self._c(ws, r, col2, sum(e["summary"][key] for e in dept_rows),
+                            bold=True, sz=8, bg=C["light_blue"])
+                else:
+                    c2 = ws.cell(row=r, column=col2)
+                    c2.border = self.BDR
+                    c2.fill = self._fill(C["summ_bg"])
+            current_row += 1
+        return current_row
+
+    def generate(self, emp_rows: list, output: str):
+        FIXED = 4
+        SUMM = 6
+        TOTAL = FIXED + self.num_days + SUMM
+
         user_weekoffs = load_user_weekoffs()
         rows_for_report = []
         for e in emp_rows:
             rule = _get_rule(e["dept"])
-            calc = AttendanceCalculator(e["dept"], rule)
+            calc = AttendanceCalculator(
+                e["dept"], rule, str(e.get("designation") or "")
+            )
             att = e["attendance"]
             if rule.get("weekly_off_adjacent"):
                 att = calc._adjacent_rule(att)
@@ -507,152 +1178,34 @@ class ReportGenerator:
             wo_label = wo_label_for_employee(user_weekoffs, str(ec), rule.get("weekly_off_days", []))
             rows_for_report.append({**e, "attendance": att, "summary": summ, "wo_label": wo_label})
 
-        # Data rows — grouped by department
         by_dept = defaultdict(list)
         for e in rows_for_report:
             by_dept[e["dept"]].append(e)
 
-        current_row = 5
-        sno         = 1
-        dept_totals = {}
+        wb = openpyxl.Workbook()
+        if not by_dept:
+            ws = wb.active
+            ws.title = "Attendance"
+            ws["A1"] = "No employees in this report."
+            wb.save(output)
+            print(f"OK  Report saved -> {output}")
+            return
 
-        fill_map = {PRESENT: C["present"], WEEK_OFF: C["weekoff"],
-                    LEAVE: C["leave"],    PARTIAL: C["partial"], PUB_HOL: C["pubhol"]}
-
-        for dept_name in sorted(by_dept):
-            emps = sorted(by_dept[dept_name], key=lambda x: x["name"])
-            ds   = defaultdict(int)
-
-            # Department separator row
-            r = current_row
-            ws.row_dimensions[r].height = 13
-            self._mc(ws, r, 1, r, TOTAL, f"  {dept_name}",
-                     bold=True, sz=8, fg=C["white"], bg=C["dept_hdr"], ha="left")
-            current_row += 1
-
-            for emp in emps:
-                r  = current_row        # main row  — attendance codes
-                r2 = current_row + 1   # sub-row   — OT hours
-
-                ws.row_dimensions[r].height  = 14
-                ws.row_dimensions[r2].height = 11
-
-                # ── Fixed info columns A–D: merged across both rows ───────────
-                self._mc(ws, r, 1, r2, 1, sno, sz=8)
-                self._mc(ws, r, 2, r2, 2, emp["name"],
-                         sz=8, ha="left")
-                self._mc(ws, r, 3, r2, 3, emp.get("designation", ""),
-                         sz=7, ha="left")
-                self._mc(ws, r, 4, r2, 4, emp.get("wo_label") or "—", sz=7)
-
-                # ── Main row: attendance code per day ─────────────────────────
-                for i in range(self.num_days):
-                    col  = FIXED + 1 + i
-                    d    = date(self.year, self.month, i + 1)
-                    code = emp["attendance"].get(d, "")
-                    od   = emp["ot_days"].get(d, 0)
-                    bg   = C["ot_day"] if (od and code == PRESENT) else fill_map.get(code)
-                    self._c(ws, r, col, code, sz=7, bg=bg)
-
-                # ── Sub-row: OT hours per day (blank when zero) ───────────────
-                for i in range(self.num_days):
-                    col = FIXED + 1 + i
-                    d   = date(self.year, self.month, i + 1)
-                    oh  = emp["ot_hours"].get(d, 0.0)
-                    if oh:
-                        self._c(ws, r2, col, round(oh, 1),
-                                sz=7, fg=C["black"], bg=C["ot_day"])
-                    else:
-                        self._c(ws, r2, col, "", sz=7, bg=C["ot_row_bg"])
-
-                # ── Main row: summary totals ───────────────────────────────────
-                summ = emp["summary"]
-                for i, key in enumerate(
-                        ["present", "wo", "ot", "ph", "total_present", "total_man_days"]):
-                    self._c(ws, r, FIXED + self.num_days + 1 + i,
-                            summ[key], bold=True, sz=8, bg=C["total_bg"])
-                    ds[key] += summ[key]
-
-                # ── Sub-row: total OT hours in OT column, rest blank ──────────
-                total_ot_hrs = round(sum(emp["ot_hours"].values()), 1)
-                for i, key in enumerate(
-                        ["present", "wo", "ot", "ph", "total_present", "total_man_days"]):
-                    if key == "ot":
-                        self._c(ws, r2, FIXED + self.num_days + 1 + i,
-                                total_ot_hrs if total_ot_hrs else "",
-                                bold=True, sz=7,
-                                bg=C["ot_day"] if total_ot_hrs else C["ot_row_bg"])
-                    else:
-                        self._c(ws, r2, FIXED + self.num_days + 1 + i,
-                                "", sz=7, bg=C["ot_row_bg"])
-
-                current_row += 2
-                sno         += 1
-
-            dept_totals[dept_name] = dict(ds)
-
-        # Bottom grand-summary rows
-        summ_keys   = ["present", "wo", "ot", "ph", "total_present", "total_man_days"]
-        summ_labels = ["Present", "W/O", "OT", "PH", "Total Present", "Total Man days"]
-
-        for label, key in zip(summ_labels, summ_keys):
-            r = current_row
-            ws.row_dimensions[r].height = 13
-            self._mc(ws, r, 1, r, FIXED, label,
-                     bold=True, sz=8, bg=C["summ_bg"], ha="right")
-
-            for i in range(self.num_days):
-                d = date(self.year, self.month, i + 1)
-                if key == "present":
-                    val = sum(1 for e in rows_for_report if e["attendance"].get(d) == PRESENT)
-                elif key == "wo":
-                    val = sum(1 for e in rows_for_report if e["attendance"].get(d) == WEEK_OFF)
-                elif key == "ot":
-                    val = sum(e["ot_days"].get(d, 0) for e in rows_for_report)
-                elif key == "ph":
-                    val = sum(1 for e in rows_for_report if e["attendance"].get(d) == PUB_HOL)
-                elif key == "total_present":
-                    val = sum(1 for e in rows_for_report
-                              if e["attendance"].get(d) in (PRESENT, WEEK_OFF, PUB_HOL))
-                else:
-                    val = sum(1 for e in rows_for_report
-                              if e["attendance"].get(d) in (PRESENT, PARTIAL))
-                self._c(ws, r, FIXED + 1 + i,
-                        val if val else "", bold=True, sz=7, bg=C["summ_bg"])
-
-            for i, k in enumerate(summ_keys):
-                col2 = FIXED + self.num_days + 1 + i
-                if k == key:
-                    self._c(ws, r, col2, sum(e["summary"][key] for e in rows_for_report),
-                            bold=True, sz=8, bg=C["light_blue"])
-                else:
-                    c2 = ws.cell(row=r, column=col2)
-                    c2.border = self.BDR; c2.fill = self._fill(C["summ_bg"])
-            current_row += 1
-
-        # Department group-total rows
-        r = current_row
-        ws.row_dimensions[r].height = 15
-        self._mc(ws, r, 1, r, FIXED + self.num_days,
-                 "Summary — by Department",
-                 bold=True, sz=9, fg=C["white"], bg=C["dark_blue"])
-        for i, k in enumerate(summ_keys):
-            self._c(ws, r, FIXED + self.num_days + 1 + i, k.replace("_", " ").title(),
-                    bold=True, sz=7, fg=C["white"], bg=C["dark_blue"])
-        current_row += 1
-
-        for dn, ds in sorted(dept_totals.items()):
-            r = current_row
-            ws.row_dimensions[r].height = 13
-            self._mc(ws, r, 1, r, FIXED + self.num_days,
-                     dn, bold=True, sz=8, fg=C["white"], bg=C["med_blue"], ha="left")
-            for i, k in enumerate(summ_keys):
-                self._c(ws, r, FIXED + self.num_days + 1 + i,
-                        ds.get(k, 0), bold=True, sz=8, fg=C["white"], bg=C["med_blue"])
-            current_row += 1
+        wb.remove(wb.active)
+        used_titles: set[str] = set()
+        for dept_name in sorted(by_dept.keys()):
+            dept_rows = by_dept[dept_name]
+            # Worksheet tab name (Excel UI) — sanitized + unique in _excel_sheet_title
+            worksheet_name = sheet_base_name_for_department(dept_name)
+            tab_title = self._excel_sheet_title(worksheet_name, used_titles)
+            ws = wb.create_sheet(title=tab_title)
+            ws.title = tab_title  # same as create_sheet title; makes “tab = worksheet name” explicit
+            self._apply_sheet_layout(ws, worksheet_name, TOTAL, FIXED)
+            next_row = self._write_employee_block(ws, dept_rows, FIXED, TOTAL)
+            self._write_dept_summary_rows(ws, dept_rows, next_row, FIXED)
 
         wb.save(output)
-        print(f"OK  Report saved -> {output}")
+        print(f"OK  Report saved -> {output}  ({len(by_dept)} department sheet(s))")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -679,6 +1232,22 @@ def _name(emp):
     ln = (emp.get("last_name")  or "").strip()
     return (f"{fn} {ln}".strip() or
             emp.get("emp_name", emp.get("name", f"EMP-{emp.get('emp_code', '?')}")))
+
+
+def employee_area(emp: dict) -> str:
+    """Resolve work area from a BioTime employee payload (same rules as the GUI Employee model)."""
+    area_list = emp.get("area") or []
+    if area_list and isinstance(area_list, list) and len(area_list) > 0:
+        a0 = area_list[0]
+        if isinstance(a0, dict):
+            return (a0.get("area_name") or a0.get("name") or "General") or "General"
+        if isinstance(a0, str) and a0.strip():
+            return a0.strip()
+    v = emp.get("area_name")
+    if isinstance(v, str) and v.strip():
+        return v.strip()
+    return "General"
+
 
 def _wo_label(off_days):
     abbr = ["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"]
@@ -784,10 +1353,29 @@ def employee_weekly_off_days(
         return []
 
 
+def _department_is_landscape_pest_family(dept_name: str) -> bool:
+    """Match gardener / nursery / landscape / pest labels from BioTime or templates."""
+    dn = (dept_name or "").strip().casefold()
+    if not dn:
+        return False
+    if "pest control" in dn or dn == "pest":
+        return True
+    if "landscape" in dn:
+        return True
+    for w in ("nursary", "nursery", "gardener", "gardeners", "gardening"):
+        if w in dn:
+            return True
+    return False
+
+
 def _get_rule(dept_name):
     if dept_name in DEPT_RULES:
         return DEPT_RULES[dept_name]
     dn = dept_name.lower()
+    if "operations" in dn and "maintenance" in dn:
+        return dict(_MEP_ENGINE_RULES)
+    if _department_is_landscape_pest_family(dept_name):
+        return dict(_LP_ENGINE_RULES)
     for k, v in DEPT_RULES.items():
         if k.lower() in dn or dn in k.lower():
             return v
@@ -850,7 +1438,7 @@ def main():
 
         weekly_off_days = employee_weekly_off_days(user_weekoffs, ec)
         effective_rule = {**rule, "weekly_off_days": weekly_off_days}
-        calc = AttendanceCalculator(dept_name, effective_rule)
+        calc = AttendanceCalculator(dept_name, effective_rule, desig)
         att, od, oh = calc.compute(txns_by_emp.get(ec, []), cfg["month"], cfg["year"])
         summ        = calc.summarize(att, od, oh)
 
